@@ -11,21 +11,27 @@ peculiar velocity surveys, with O(N) scaling vs. O(N³) for the standard method.
 ### Laptop (CPU, N ≤ 2,000)
 
 ```bash
-conda env create -f environment_cpu.yml
-conda activate pointpv-cpu
+# Use existing generic env, or: conda env create -f environment_cpu.yml
+conda activate generic
 
-# Generate a small mock catalog
-python scripts/generate_mock.py --n 1000 --output data/mock_1000.npz
+# Install extra deps if needed
+pip install emcee iminuit camb
+
+# Generate a synthetic mock catalog (no lightcone required)
+python scripts/generate_mock.py --synthetic --n 1000 --output data/mock_1000.npz
 
 # Run baseline MLF likelihood scan
-python scripts/run_baseline.py --n 1000 --backend scipy
+python scripts/run_baseline.py --catalog data/mock_1000.npz --backend scipy
 
 # Run McDonald RG likelihood scan
-python scripts/run_rg.py --n 1000 --backend scipy
+python scripts/run_rg.py --catalog data/mock_1000.npz --backend scipy
 
 # Compare results
-python scripts/compare.py --n 1000
+python scripts/compare.py --baseline results/baseline_1000.npz --rg results/rg_1000.npz
 ```
+
+> **Note:** avoid running scripts via `conda run` — the `--n` argument conflicts
+> with conda's own `-n`/`--name` flag. Call python directly instead.
 
 ### Perlmutter (GPU, N up to 100,000)
 

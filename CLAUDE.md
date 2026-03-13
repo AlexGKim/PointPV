@@ -24,8 +24,20 @@ Set `POINTPV_BACKEND=scipy` (default, CPU laptop dev) or `POINTPV_BACKEND=petsc`
 (Perlmutter GPU/MPI) to switch between ScipySolver and PETScSolver in sparse_ops.py.
 
 ## Environments
-- Laptop:     conda env create -f environment_cpu.yml
+- Laptop:     `generic` conda env works (has numpy, scipy, astropy, camb, pytest)
+              conda env create -f environment_cpu.yml creates `pointpv-cpu`
 - Perlmutter: conda env create -f environment_gpu.yml  (adds petsc4py, cupy)
+
+## FLIP
+- Installed at /Users/akim/Projects/flip (not on sys.path by default)
+- velocity.py inserts this path at runtime — no manual setup needed
+- Uses lai22 velocity model with CAMB for P(k) (not CLASS)
+- emcee and iminuit must be installed: pip install emcee iminuit
+
+## RG coarsen_all
+- `schur_tol` parameter controls speed/accuracy tradeoff
+- schur_tol=0.0 (default): exact, ~560ms for N=1000
+- schur_tol=1.0: 7x faster (~80ms), |ΔlogL|~1e-6 for physical covariance
 
 ## Conventions
 - All covariance matrices are in units of (km/s)²
@@ -34,9 +46,14 @@ Set `POINTPV_BACKEND=scipy` (default, CPU laptop dev) or `POINTPV_BACKEND=petsc`
 - Log-likelihood is defined as L = -½[log|C| + uᵀC⁻¹u] (no constant term)
 
 ## Running benchmarks
-    python scripts/run_baseline.py --n 1000 --backend scipy
-    python scripts/run_rg.py --n 1000 --backend scipy
-    python scripts/compare.py --n 1000
+    # Note: --n conflicts with conda's -n flag; use direct python path or --catalog
+    /path/to/env/bin/python scripts/run_baseline.py --catalog data/mock_1000.npz
+    /path/to/env/bin/python scripts/run_rg.py --catalog data/mock_1000.npz
+    /path/to/env/bin/python scripts/compare.py --baseline results/baseline_1000.npz --rg results/rg_1000.npz
+
+    # Synthetic catalog (no lightcone needed):
+    python scripts/generate_mock.py --synthetic --n 1000
+    python scripts/run_baseline.py --synthetic --n 1000  # (run directly, not via conda run)
 
 ## NERSC
 - Module load: python, cudatoolkit (for GPU runs)

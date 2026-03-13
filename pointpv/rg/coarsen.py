@@ -56,6 +56,7 @@ def rg_coarsen_all(
     C: np.ndarray,
     tree: RGTree,
     verbose: bool = False,
+    schur_tol: float = 0.0,
 ) -> float:
     """
     Run all RG coarsening levels and return the log-likelihood.
@@ -113,25 +114,26 @@ def rg_coarsen_all(
             c_ii = C_cur[li, li]
             c_jj = C_cur[lj, lj]
             c_ij = C_cur[li, lj]
-            c_dd = c_ii + c_jj - 2 * c_ij
-            if c_dd <= 0:
-                c_dd = max(c_dd, 1e-12)
+            c_dd = max(c_ii + c_jj - 2 * c_ij, 1e-12)
             d = u_cur[li] - u_cur[lj]
             logL_acc += -0.5 * (np.log(abs(c_dd)) + d**2 / c_dd) + np.log(2.0)
 
-            # Condition all remaining variables on d: u_k -= (C_ki - C_kj)/c_dd * d
-            coeff = (C_cur[:, li] - C_cur[:, lj]) / c_dd  # shape (M,)
-            u_cur -= coeff * d
+            # Schur update (rank-1); skip rows/cols where diff_col is negligible
+            diff_col = C_cur[:, li] - C_cur[:, lj]
+            if schur_tol > 0.0:
+                active = np.abs(diff_col) > schur_tol
+                if active.any():
+                    dc = diff_col[active]
+                    C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
+                    u_cur[active] -= (dc / c_dd) * d
+            else:
+                scale = diff_col / c_dd
+                C_cur -= scale[:, np.newaxis] * diff_col[np.newaxis, :]
+                u_cur -= scale * d
 
-            # Update covariance: C_kl -= (C_ki - C_kj)(C_li - C_lj)/c_dd
-            diff_col = C_cur[:, li] - C_cur[:, lj]  # shape (M,)
-            C_cur -= np.outer(diff_col, diff_col) / c_dd
-
-            # Merge lj into li: li becomes the sum mode
-            u_cur[li] = u_cur[li] + u_cur[lj]
-            C_cur[li, :] = C_cur[li, :] + C_cur[lj, :]
-            C_cur[:, li] = C_cur[:, li] + C_cur[:, lj]
-
+            u_cur[li] += u_cur[lj]
+            C_cur[li, :] += C_cur[lj, :]
+            C_cur[:, li] += C_cur[:, lj]
             new_local[id(node)] = li
             cols_to_delete.append(lj)
 

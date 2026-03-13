@@ -38,6 +38,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--synthetic", action="store_true",
                    help="Generate a synthetic catalog on the fly (no file needed)")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--schur-tol", type=float, default=0.0,
+                   help="Schur update cutoff for speed/accuracy tradeoff (0=exact)")
     p.add_argument("--quiet", action="store_true")
     return p.parse_args()
 
@@ -91,7 +93,7 @@ def main() -> None:
     fsigma8_values = np.linspace(args.fs8_min, args.fs8_max, args.n_grid)
     print(f"Running RG scan over {args.n_grid} fsigma8 values ...")
     results = scan_fsigma8(u, catalog, positions, fsigma8_values=fsigma8_values,
-                           verbose=not args.quiet)
+                           schur_tol=args.schur_tol, verbose=not args.quiet)
 
     best_idx = int(np.argmax(results["logL"]))
     best_fs8 = results["fsigma8"][best_idx]

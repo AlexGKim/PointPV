@@ -45,6 +45,7 @@ def log_likelihood(
     positions: np.ndarray,
     max_leaf_size: int = 2,
     verbose: bool = False,
+    schur_tol: float = 0.0,
 ) -> float:
     """
     McDonald RG log-likelihood.
@@ -73,7 +74,7 @@ def log_likelihood(
         print(f"  [RG] tree built in {time.perf_counter()-t0:.3f}s, depth={tree.depth}")
 
     # Run the RG coarse-graining
-    logL = rg_coarsen_all(u, C, tree, verbose=verbose)
+    logL = rg_coarsen_all(u, C, tree, verbose=verbose, schur_tol=schur_tol)
 
     if verbose:
         print(f"  [RG] total wall time: {time.perf_counter()-t0:.3f}s")
@@ -87,6 +88,7 @@ def scan_fsigma8(
     positions: np.ndarray,
     fsigma8_values: np.ndarray | None = None,
     cosmology: dict | None = None,
+    schur_tol: float = 0.0,
     verbose: bool = True,
 ) -> dict[str, np.ndarray]:
     """
@@ -120,7 +122,7 @@ def scan_fsigma8(
     for i, fs8 in enumerate(fsigma8_values):
         t0 = time.perf_counter()
         C = build_covariance(catalog, fs8, cosmology=cosmology)
-        logL_values[i] = log_likelihood(u, C, positions, verbose=False)
+        logL_values[i] = log_likelihood(u, C, positions, verbose=False, schur_tol=schur_tol)
         dt = time.perf_counter() - t0
         times.append(dt)
         if verbose:

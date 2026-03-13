@@ -94,39 +94,74 @@ def _flip_covariance(
     cosmology: dict,
 ) -> np.ndarray:
     """
-    Compute covariance matrix using FLIP.
+    Compute covariance matrix using FLIP (lai22 velocity model).
 
-    Raises ImportError if FLIP is not installed.
+    Uses CAMB to compute P(k) and FLIP's CovMatrix to build the vv matrix.
+    The matrix is normalised at fsigma8=1 inside FLIP; we pass fsigma8 via
+    compute_covariance_sum so that the quadratic fsigma8^2 scaling is applied.
     """
-    import flip  # noqa: F401 — will raise ImportError if missing
-
+    import sys
+    sys.path.insert(0, "/Users/akim/Projects/flip")
+    import camb
     from astropy.cosmology import FlatLambdaCDM
     import astropy.units as u
+    from flip.covariance.covariance import CovMatrix
 
     cos = cosmology
+    h = cos["H0"] / 100.0
     astropy_cosmo = FlatLambdaCDM(H0=cos["H0"], Om0=cos["Omega_m"])
 
-    # Convert (RA, Dec, z) to comoving Cartesian positions
     ra = catalog["ra"]
     dec = catalog["dec"]
-    z = catalog["z_obs"]
+    z_obs = catalog["z_obs"]
     sigma_eta = catalog["sigma_eta"]
 
-    from astropy.coordinates import SkyCoord
-    coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
-    r_com = astropy_cosmo.comoving_distance(z).to(u.Mpc / u.littleh, equivalencies=u.with_H0(astropy_cosmo.H0)).value
+    # Comoving distances in Mpc/h
+    r_com = astropy_cosmo.comoving_distance(z_obs).value * h  # Mpc/h
 
-    # FLIP API (subject to FLIP version — verify against installed version)
-    cov_model = flip.CovMatrix(
-        coords=coords,
-        redshifts=z,
-        comoving_distances=r_com,
-        sigma_v=sigma_eta * 2.998e5 * z,  # approximate velocity error
-        power_spectrum="linear",
-        cosmology=astropy_cosmo,
-        fsigma8=fsigma8,
+    # Compute linear P(k) with CAMB at z=0, normalised to sigma8
+    pars = camb.CAMBparams()
+    pars.set_cosmology(
+        H0=cos["H0"],
+        ombh2=cos["Omega_b"] * h**2,
+        omch2=(cos["Omega_m"] - cos["Omega_b"]) * h**2,
     )
-    return cov_model.matrix  # (N, N) ndarray in (km/s)²
+    pars.InitPower.set_params(ns=cos["n_s"])
+    pars.set_matter_power(redshifts=[0.0], kmax=10.0)
+    results = camb.get_results(pars)
+
+    # Rescale to match sigma8
+    sigma8_camb = results.get_sigma8_0()
+    k_arr, _, pk_lin = results.get_matter_power_spectrum(
+        minkh=1e-4, maxkh=10.0, npoints=500
+    )
+    pk_lin = pk_lin[0] * (cos["sigma8"] / sigma8_camb) ** 2  # (Mpc/h)^3
+
+    # FLIP power_spectrum_dict format for velocity-only model:
+    # power_spectrum_dict["vv"] = [[k_array], [Pk_tt_array]]
+    # where Pk_tt is the theta-theta (velocity divergence) power spectrum.
+    # For linear theory Pk_tt = Pk_lin (fsigma8 scaling applied separately).
+    power_spectrum_dict = {"vv": [[k_arr], [pk_lin]]}
+
+    # Build the normalised covariance matrices (stored as upper-triangle vectors)
+    cov_model = CovMatrix.init_from_generator(
+        model_name="lai22",
+        model_type="velocity",
+        power_spectrum_dict=power_spectrum_dict,
+        coordinates_velocity=(ra, dec, r_com),
+        number_worker=1,
+    )
+    cov_model.compute_full_matrix()
+
+    # Velocity noise: sigma_v = c * z * sigma_eta
+    c_km_s = 2.998e5
+    sigma_v_noise = c_km_s * z_obs * sigma_eta
+
+    # Apply fsigma8 scaling and noise diagonal
+    parameter_values_dict = {"fs8": fsigma8, "sigv": 0.0}
+    C = cov_model.compute_covariance_sum(parameter_values_dict, sigma_v_noise)
+
+    return C
 
 
 def _analytic_covariance(

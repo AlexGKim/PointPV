@@ -27,6 +27,8 @@ Set `POINTPV_BACKEND=scipy` (default, CPU laptop dev) or `POINTPV_BACKEND=petsc`
 - Laptop:     `generic` conda env works (has numpy, scipy, astropy, camb, pytest)
               conda env create -f environment_cpu.yml creates `pointpv-cpu`
 - Perlmutter: conda env create -f environment_gpu.yml  (adds petsc4py, cupy)
+- conda is miniforge3; use `$(conda info --base)/envs/generic/bin/python` for the
+  direct python path (needed because `conda run` mis-parses `--n` as its own flag)
 
 ## FLIP
 - Installed at /Users/akim/Projects/flip (not on sys.path by default)
@@ -46,14 +48,18 @@ Set `POINTPV_BACKEND=scipy` (default, CPU laptop dev) or `POINTPV_BACKEND=petsc`
 - Log-likelihood is defined as L = -½[log|C| + uᵀC⁻¹u] (no constant term)
 
 ## Running benchmarks
-    # Note: --n conflicts with conda's -n flag; use direct python path or --catalog
-    /path/to/env/bin/python scripts/run_baseline.py --catalog data/mock_1000.npz
-    /path/to/env/bin/python scripts/run_rg.py --catalog data/mock_1000.npz
-    /path/to/env/bin/python scripts/compare.py --baseline results/baseline_1000.npz --rg results/rg_1000.npz
+    PY=$(conda info --base)/envs/generic/bin/python
 
-    # Synthetic catalog (no lightcone needed):
-    python scripts/generate_mock.py --synthetic --n 1000
-    python scripts/run_baseline.py --synthetic --n 1000  # (run directly, not via conda run)
+    # Magnitude-limited catalog (default: m_lim=20, z_max=0.1, Schechter LF)
+    $PY scripts/generate_mock.py --synthetic --n 1000 --output data/mock_1000.npz
+    # Uniform-z catalog (add --no-mag-limit for quick tests without selection function)
+
+    # Diagnostic plots → figs/nz_*.pdf, figs/sky_*.pdf
+    $PY scripts/plot_catalog.py --catalog data/mock_1000.npz --output figs/
+
+    $PY scripts/run_baseline.py --catalog data/mock_1000.npz
+    $PY scripts/run_rg.py --catalog data/mock_1000.npz
+    $PY scripts/compare.py --baseline results/baseline_1000.npz --rg results/rg_1000.npz
 
 ## NERSC
 - Module load: python, cudatoolkit (for GPU runs)

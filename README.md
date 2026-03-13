@@ -17,8 +17,12 @@ conda activate generic
 # Install extra deps if needed
 pip install emcee iminuit camb
 
-# Generate a synthetic mock catalog (no lightcone required)
+# Generate a magnitude-limited synthetic catalog (no lightcone required)
+# Default: m_lim=20, z_max=0.1, Schechter LF.  Add --no-mag-limit for uniform z.
 python scripts/generate_mock.py --synthetic --n 1000 --output data/mock_1000.npz
+
+# Diagnostic plots (n(z) histogram + Mollweide sky map → figs/)
+python scripts/plot_catalog.py --catalog data/mock_1000.npz --output figs/
 
 # Run baseline MLF likelihood scan
 python scripts/run_baseline.py --catalog data/mock_1000.npz --backend scipy

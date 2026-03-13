@@ -1,0 +1,16 @@
+name: pointpv-cpu
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - matplotlib
+  - astropy
+  - colossus
+  - pip
+  - pip:
+      - abacusutils
+      - flip  # corentinravoux/flip — install from GitHub if not on PyPI
+      # pip install git+https://github.com/corentinravoux/flip.git

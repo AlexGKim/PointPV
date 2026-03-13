@@ -1,0 +1,19 @@
+name: pointpv-gpu
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - matplotlib
+  - astropy
+  - colossus
+  - cupy  # GPU arrays; version must match CUDA toolkit on Perlmutter
+  - petsc4py  # MPI-distributed sparse ops with cuSPARSE backend
+  - mpi4py
+  - pip
+  - pip:
+      - abacusutils
+      - flip  # corentinravoux/flip
+      # pip install git+https://github.com/corentinravoux/flip.git

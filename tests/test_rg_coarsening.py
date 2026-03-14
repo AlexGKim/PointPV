@@ -96,3 +96,23 @@ def test_active_fraction_meaningful() -> None:
         u, C, tree, return_diagnostics=True, fill_tol=1.0, schur_tol=1.0
     )
     assert len(result) == 3
+
+
+@pytest.mark.parametrize("sparse_tol,schur_tol", [(1.0, 1.0), (0.5, 0.5)])
+def test_sparse_accuracy(sparse_tol: float, schur_tol: float) -> None:
+    """Sparse path must agree with dense+schur_tol to within a small absolute logL error."""
+    u, C, pos = _make_synthetic_problem(200, seed=70)
+    tree = build_tree(pos)
+    logL_dense = rg_coarsen_all(u, C, tree, schur_tol=schur_tol)
+    logL_sparse = rg_coarsen_all(u, C, tree, sparse_tol=sparse_tol, schur_tol=schur_tol)
+    assert abs(logL_sparse - logL_dense) < 5.0, (
+        f"sparse_tol={sparse_tol}: |ΔlogL|={abs(logL_sparse - logL_dense):.4f}"
+    )
+
+
+def test_sparse_requires_schur_tol() -> None:
+    """sparse_tol without schur_tol must raise ValueError."""
+    u, C, pos = _make_synthetic_problem(8, seed=72)
+    tree = build_tree(pos)
+    with pytest.raises(ValueError, match="schur_tol"):
+        rg_coarsen_all(u, C, tree, sparse_tol=1.0, schur_tol=0.0)

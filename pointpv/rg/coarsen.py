@@ -47,6 +47,7 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import scipy.sparse as sp
 
 from pointpv.rg.tree import RGTree, RGNode
 
@@ -59,6 +60,7 @@ def rg_coarsen_all(
     schur_tol: float = 0.0,
     return_diagnostics: bool = False,
     fill_tol: float = 0.0,
+    sparse_tol: float = 0.0,
 ) -> "float | tuple[float, list[int]] | tuple[float, list[int], list[float]]":
     """
     Run all RG coarsening levels and return the log-likelihood.
@@ -84,6 +86,12 @@ def rg_coarsen_all(
         When > 0, compute fill fraction (fraction of off-diagonal entries with
         |C[i,j]| >= fill_tol) at the start of each level.  Appended to the
         3-tuple return when return_diagnostics=True.
+    sparse_tol : float
+        When > 0, store C_cur as scipy.sparse.csc_matrix and zero out
+        off-diagonal entries with |C[i,j]| < sparse_tol after each level.
+        Requires schur_tol > 0 (the full dense Schur update with schur_tol=0
+        would negate the sparsity).  Together they give O(k²) work per pair
+        where k = nnz per column instead of O(N²).
 
     Returns
     -------
@@ -94,19 +102,29 @@ def rg_coarsen_all(
     (logL, level_sizes, fill_fractions) : (float, list[int], list[float])
         When return_diagnostics=True and fill_tol>0.
     """
+    if sparse_tol > 0.0 and schur_tol == 0.0:
+        raise ValueError(
+            "sparse_tol requires schur_tol > 0. "
+            "The full Schur update (schur_tol=0) is dense and would defeat sparsity."
+        )
+
     logL_acc = 0.0
 
     level_nodes = tree.levels[0]
     u_cur = u.copy()
-    C_cur = C.copy()
+    C_cur: "np.ndarray | sp.csc_matrix" = C.copy()
+
+    if sparse_tol > 0.0:
+        C_cur = sp.csc_matrix(C_cur)
 
     level_sizes: list[int] = [len(u_cur)]
     fill_fractions: list[float] = []
 
     # Compute fill fraction at level 0 (before any coarsening)
     if fill_tol > 0.0:
+        C_dense0 = C_cur.toarray() if sp.issparse(C_cur) else C_cur
         mask0 = ~np.eye(len(u_cur), dtype=bool)
-        fill_fractions.append(float(np.mean(np.abs(C_cur[mask0]) >= fill_tol)))
+        fill_fractions.append(float(np.mean(np.abs(C_dense0[mask0]) >= fill_tol)))
 
     # Map from node object id to current local array index
     node_to_local: dict[int, int] = {id(n): i for i, n in enumerate(level_nodes)}
@@ -141,31 +159,55 @@ def rg_coarsen_all(
         level_active: list[float] = []
 
         for li, lj, node in pair_updates:
-            c_ii = C_cur[li, li]
-            c_jj = C_cur[lj, lj]
-            c_ij = C_cur[li, lj]
+            c_ii = float(C_cur[li, li])
+            c_jj = float(C_cur[lj, lj])
+            c_ij = float(C_cur[li, lj])
             c_dd = max(c_ii + c_jj - 2 * c_ij, 1e-12)
             d = u_cur[li] - u_cur[lj]
             logL_acc += -0.5 * (np.log(abs(c_dd)) + d**2 / c_dd) + np.log(2.0)
 
+            # Column extraction: O(nnz) for sparse, O(N) for dense
+            if sp.issparse(C_cur):
+                col_i = np.asarray(C_cur.getcol(li).todense()).ravel()
+                col_j = np.asarray(C_cur.getcol(lj).todense()).ravel()
+                diff_col = col_i - col_j
+            else:
+                diff_col = C_cur[:, li] - C_cur[:, lj]
+
             # Schur update (rank-1); skip rows/cols where diff_col is negligible
-            diff_col = C_cur[:, li] - C_cur[:, lj]
             if schur_tol > 0.0:
                 active = np.abs(diff_col) > schur_tol
                 if fill_tol > 0.0:
                     level_active.append(float(np.mean(active)))
                 if active.any():
                     dc = diff_col[active]
-                    C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
+                    rows = np.where(active)[0]
+                    if sp.issparse(C_cur):
+                        n = len(rows)
+                        correction = sp.coo_matrix(
+                            (np.outer(dc, dc).ravel() / c_dd,
+                             (np.repeat(rows, n), np.tile(rows, n))),
+                            shape=C_cur.shape,
+                        ).tocsc()
+                        C_cur = C_cur - correction
+                    else:
+                        C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
                     u_cur[active] -= (dc / c_dd) * d
             else:
                 scale = diff_col / c_dd
                 C_cur -= scale[:, np.newaxis] * diff_col[np.newaxis, :]
                 u_cur -= scale * d
 
+            # Sum-mode row/col accumulation
             u_cur[li] += u_cur[lj]
-            C_cur[li, :] += C_cur[lj, :]
-            C_cur[:, li] += C_cur[:, lj]
+            if sp.issparse(C_cur):
+                C_cur = C_cur.tolil()
+                C_cur[li, :] += C_cur[lj, :]
+                C_cur[:, li] += C_cur[:, lj]
+                C_cur = C_cur.tocsc()
+            else:
+                C_cur[li, :] += C_cur[lj, :]
+                C_cur[:, li] += C_cur[:, lj]
             new_local[id(node)] = li
             cols_to_delete.append(lj)
 
@@ -177,10 +219,20 @@ def rg_coarsen_all(
         if cols_to_delete:
             keep = sorted(set(range(len(u_cur))) - set(cols_to_delete))
             u_cur = u_cur[keep]
-            C_cur = C_cur[np.ix_(keep, keep)]
+            if sp.issparse(C_cur):
+                C_cur = C_cur[keep, :][:, keep]
+            else:
+                C_cur = C_cur[np.ix_(keep, keep)]
             # Remap indices
             old_to_new = {old: new for new, old in enumerate(keep)}
             new_local = {k: old_to_new[v] for k, v in new_local.items()}
+
+        # Re-sparsify: zero out entries that fell below sparse_tol after Schur updates
+        if sparse_tol > 0.0 and sp.issparse(C_cur) and len(u_cur) > 1:
+            C_cur = C_cur.tocsr()
+            C_cur.data[np.abs(C_cur.data) < sparse_tol] = 0.0
+            C_cur.eliminate_zeros()
+            C_cur = C_cur.tocsc()
 
         node_to_local = new_local
 
@@ -188,8 +240,9 @@ def rg_coarsen_all(
 
         # Compute fill fraction of C_cur after deletions (= start of next level)
         if fill_tol > 0.0 and len(u_cur) > 1:
+            C_dense = C_cur.toarray() if sp.issparse(C_cur) else C_cur
             mask = ~np.eye(len(u_cur), dtype=bool)
-            fill_fractions.append(float(np.mean(np.abs(C_cur[mask]) >= fill_tol)))
+            fill_fractions.append(float(np.mean(np.abs(C_dense[mask]) >= fill_tol)))
         elif fill_tol > 0.0:
             fill_fractions.append(0.0)  # single node: no off-diagonal
 
@@ -207,7 +260,8 @@ def rg_coarsen_all(
 
     # Final single node
     assert len(u_cur) == 1, f"Expected 1 final node, got {len(u_cur)}"
-    logL_acc += -0.5 * (np.log(abs(C_cur[0, 0])) + u_cur[0]**2 / C_cur[0, 0])
+    c_final = float(C_cur[0, 0])
+    logL_acc += -0.5 * (np.log(abs(c_final)) + u_cur[0]**2 / c_final)
 
     logL = float(logL_acc)
     if return_diagnostics:

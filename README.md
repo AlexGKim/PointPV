@@ -59,7 +59,7 @@ Complexity: O(N³). Uses FLIP for covariance matrix construction, CuPy for GPU C
 Reformulates the same Gaussian likelihood via hierarchical coarse-graining:
 at each level, pairs of adjacent galaxies are merged by integrating out their
 "difference mode." Each step contributes a scalar to log|det C| and updates the
-covariance of the "sum mode." Complexity: O(N log N) or O(N) with sparsity cutoff.
+covariance of the "sum mode." Complexity: O(N³) dense (default), O(N log N) with sparse_tol + schur_tol > 0.
 
 Reference: McDonald 2019, PhysRevD.100.043511.
 
@@ -102,7 +102,7 @@ $PY -m pytest tests/ -v
 | `tests/test_rg_large_n.py` | RG vs Cholesky for N=200, 500, 1000 (`-m slow`) |
 | `tests/test_rg_odd_n.py` | Odd-N singleton pass-through (N=3,7,11,33,101) |
 | `tests/test_rg_schur_tol.py` | `schur_tol` accuracy tradeoff at N=200 |
-| `tests/test_rg_coarsening.py` | Active-node count halves per RG level |
+| `tests/test_rg_coarsening.py` | Fill fraction tracking, sparse C_cur accuracy, level-size shrinkage |
 | `tests/test_rg_flip_covariance.py` | SPD check + RG/MLF agreement with real FLIP covariance (`-m flip`) |
 | `tests/test_plots.py` | Smoke tests for all plot-generation functions |
 
@@ -117,6 +117,9 @@ $PY scripts/validate_fsigma8.py --n 200 --n-grid 40
 
 # Real FLIP/CAMB covariance (slow, requires FLIP)
 $PY scripts/validate_fsigma8.py --n 50 --flip
+
+# Sparsity diagnostic table (fill% per level)
+$PY scripts/validate_fsigma8.py --n 200 --n-grid 5 --fill-tol 1.0
 ```
 
 Output files produced:

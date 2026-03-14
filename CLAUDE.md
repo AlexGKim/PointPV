@@ -20,8 +20,15 @@ fsigma8 from peculiar velocity surveys, benchmarked against the standard MLF met
 - `pointpv/benchmark/`  — timing and accuracy comparison utilities
 
 ## Sparse Backend
-Set `POINTPV_BACKEND=scipy` (default, CPU laptop dev) or `POINTPV_BACKEND=petsc`
-(Perlmutter GPU/MPI) to switch between ScipySolver and PETScSolver in sparse_ops.py.
+`sparse_ops.py` provides ScipySolver / PETScSolver infrastructure (selectable via
+POINTPV_BACKEND=scipy|petsc) for future SpMV operations, but is not yet called by
+the coarsening loop.
+
+The active sparse path is in `rg_coarsen_all` via the `sparse_tol` parameter:
+- sparse_tol=0.0 (default): dense numpy path, O(N³)
+- sparse_tol=X > 0: scipy.sparse.csc_matrix path, O(N log N) when combined with
+  schur_tol > 0.  Off-diagonal entries below sparse_tol are zeroed after each level.
+  Requires schur_tol > 0 (enforced by ValueError).
 
 ## Environments
 - Laptop:     `generic` conda env works (has numpy, scipy, astropy, camb, pytest)
@@ -37,9 +44,13 @@ Set `POINTPV_BACKEND=scipy` (default, CPU laptop dev) or `POINTPV_BACKEND=petsc`
 - emcee and iminuit must be installed: pip install emcee iminuit
 
 ## RG coarsen_all
-- `schur_tol` parameter controls speed/accuracy tradeoff
-- schur_tol=0.0 (default): exact, ~560ms for N=1000
-- schur_tol=1.0: 7x faster (~80ms), |ΔlogL|~1e-6 for physical covariance
+Parameters controlling the speed/accuracy/sparsity tradeoffs:
+- schur_tol=0.0 (default): exact dense Schur update, ~560ms for N=1000
+- schur_tol=1.0: skip small rank-1 corrections, ~7x faster, |ΔlogL|~1e-6
+- fill_tol=0.0 (default): no fill tracking; fill_tol>0 records fill fraction of
+  C_cur at each level (returned as 3rd element of diagnostics tuple)
+- sparse_tol=0.0 (default): dense path; sparse_tol>0 uses scipy.sparse.csc_matrix
+  and eliminates entries below sparse_tol after each level (requires schur_tol>0)
 
 ## Conventions
 - All covariance matrices are in units of (km/s)²

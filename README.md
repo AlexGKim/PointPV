@@ -78,6 +78,53 @@ pointpv/
 
 See `docs/results.md` (updated as experiments run).
 
+## Testing & Validation
+
+### Fast pytest suite (no FLIP required, < 60 s)
+
+```bash
+PY=$(conda info --base)/envs/generic/bin/python
+$PY -m pytest tests/ -v -m "not flip"
+```
+
+### Full suite including FLIP covariance tests (~2–5 min)
+
+```bash
+$PY -m pytest tests/ -v
+```
+
+### Test file summary
+
+| File | Covers |
+|------|--------|
+| `tests/test_rg_n2.py` | N=2 exact closed-form special case |
+| `tests/test_rg_regression.py` | RG vs Cholesky for N=10–100 |
+| `tests/test_rg_large_n.py` | RG vs Cholesky for N=200, 500, 1000 (`-m slow`) |
+| `tests/test_rg_odd_n.py` | Odd-N singleton pass-through (N=3,7,11,33,101) |
+| `tests/test_rg_schur_tol.py` | `schur_tol` accuracy tradeoff at N=200 |
+| `tests/test_rg_coarsening.py` | Active-node count halves per RG level |
+| `tests/test_rg_flip_covariance.py` | SPD check + RG/MLF agreement with real FLIP covariance (`-m flip`) |
+| `tests/test_plots.py` | Smoke tests for all plot-generation functions |
+
+### Science validation script
+
+Runs an end-to-end fsigma8 recovery with both methods and generates all
+diagnostic plots under `figs/`:
+
+```bash
+# Synthetic exponential covariance (fast, ~10 s for N=200)
+$PY scripts/validate_fsigma8.py --n 200 --n-grid 40
+
+# Real FLIP/CAMB covariance (slow, requires FLIP)
+$PY scripts/validate_fsigma8.py --n 50 --flip
+```
+
+Output files produced:
+- `figs/validate_compare.png` — log-likelihood curves and MLF/RG difference
+- `figs/validate_scaling.png` — wall-clock timing comparison
+- `figs/nz_validate.pdf` — n(z) histogram
+- `figs/sky_validate.pdf` — Mollweide sky map
+
 ## References
 
 - McDonald 2019, PhysRevD.100.043511

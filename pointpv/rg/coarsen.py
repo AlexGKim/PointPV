@@ -57,7 +57,8 @@ def rg_coarsen_all(
     tree: RGTree,
     verbose: bool = False,
     schur_tol: float = 0.0,
-) -> float:
+    return_diagnostics: bool = False,
+) -> "float | tuple[float, list[int]]":
     """
     Run all RG coarsening levels and return the log-likelihood.
 
@@ -71,16 +72,25 @@ def rg_coarsen_all(
         Hierarchical pairing tree from rg.tree.build_tree.
     verbose : bool
         Print per-level timing.
+    return_diagnostics : bool
+        If True, return (logL, level_sizes) where level_sizes[k] is the
+        number of active nodes at the start of level k (before merging).
+        level_sizes[0] == N and level_sizes[-1] == 1.
 
     Returns
     -------
     logL : float
+        When return_diagnostics=False (default).
+    (logL, level_sizes) : (float, list[int])
+        When return_diagnostics=True.
     """
     logL_acc = 0.0
 
     level_nodes = tree.levels[0]
     u_cur = u.copy()
     C_cur = C.copy()
+
+    level_sizes: list[int] = [len(u_cur)]
 
     # Map from node object id to current local array index
     node_to_local: dict[int, int] = {id(n): i for i, n in enumerate(level_nodes)}
@@ -152,6 +162,8 @@ def rg_coarsen_all(
 
         node_to_local = new_local
 
+        level_sizes.append(len(u_cur))
+
         if verbose:
             print(
                 f"  [RG] level {level_idx}: {len(next_nodes)} nodes, "
@@ -162,7 +174,10 @@ def rg_coarsen_all(
     assert len(u_cur) == 1, f"Expected 1 final node, got {len(u_cur)}"
     logL_acc += -0.5 * (np.log(abs(C_cur[0, 0])) + u_cur[0]**2 / C_cur[0, 0])
 
-    return float(logL_acc)
+    logL = float(logL_acc)
+    if return_diagnostics:
+        return logL, level_sizes
+    return logL
 
 
 def rg_step_n2(u: np.ndarray, C: np.ndarray) -> float:

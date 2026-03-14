@@ -4,7 +4,7 @@
 
 This project tests whether the McDonald (2019) RG coarse-graining algorithm can replace
 the standard maximum-likelihood function (MLF) approach for fitting fsigma8 from large
-peculiar velocity surveys, with O(N) scaling vs. O(N³) for the standard method.
+peculiar velocity surveys, with O(N log N) scaling vs. O(N³) for the standard method.
 
 ## Quick Start
 
@@ -102,7 +102,7 @@ $PY -m pytest tests/ -v
 | `tests/test_rg_large_n.py` | RG vs Cholesky for N=200, 500, 1000 (`-m slow`) |
 | `tests/test_rg_odd_n.py` | Odd-N singleton pass-through (N=3,7,11,33,101) |
 | `tests/test_rg_schur_tol.py` | `schur_tol` accuracy tradeoff at N=200 |
-| `tests/test_rg_coarsening.py` | Fill fraction tracking, sparse C_cur accuracy, level-size shrinkage |
+| `tests/test_rg_coarsening.py` | Sparse path: nnz reduction, fsigma8 recovery, sub-cubic scaling (`-m slow`); fill fraction tracking; level-size shrinkage |
 | `tests/test_rg_flip_covariance.py` | SPD check + RG/MLF agreement with real FLIP covariance (`-m flip`) |
 | `tests/test_plots.py` | Smoke tests for all plot-generation functions |
 

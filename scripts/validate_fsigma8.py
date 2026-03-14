@@ -64,14 +64,25 @@ def _scan_synthetic(
     pos: np.ndarray,
     fs8_ref: float,
     fs8_values: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """
     Scan both MLF and RG over a fsigma8 grid using a scaled synthetic covariance.
 
     The covariance scales as C(fs8) = (fs8/fs8_ref)^2 * C_ref.
+
+    Returns
+    -------
+    logL_mlf, logL_rg, times_mlf, times_rg, t_tree_rg
+        ``t_tree_rg`` is the one-off tree build time (not included in ``times_rg``).
     """
     from pointpv.likelihood.mlf import log_likelihood as mlf_logL
     from pointpv.likelihood.rg import log_likelihood as rg_logL
+    from pointpv.rg.tree import build_tree
+
+    # Build the pairing tree once — positions don't change across evaluations.
+    t0 = time.perf_counter()
+    tree = build_tree(pos)
+    t_tree_rg = time.perf_counter() - t0
 
     logL_mlf = np.empty(len(fs8_values))
     logL_rg = np.empty(len(fs8_values))
@@ -86,24 +97,37 @@ def _scan_synthetic(
         times_mlf[i] = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        logL_rg[i] = rg_logL(u, C, pos, verbose=False)
+        logL_rg[i] = rg_logL(u, C, tree=tree, verbose=False)
         times_rg[i] = time.perf_counter() - t0
 
-    return logL_mlf, logL_rg, times_mlf, times_rg
+    return logL_mlf, logL_rg, times_mlf, times_rg, t_tree_rg
 
 
 def _scan_flip(
     catalog: dict,
     pos: np.ndarray,
     fs8_values: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Scan using real FLIP/CAMB covariance pipeline."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Scan using real FLIP/CAMB covariance pipeline.
+
+    Returns
+    -------
+    logL_mlf, logL_rg, times_mlf, times_rg, t_tree_rg
+        ``t_tree_rg`` is the one-off tree build time (not included in ``times_rg``).
+    """
     from pointpv.covariance.velocity import build_covariance
     from pointpv.likelihood.mlf import log_likelihood as mlf_logL
     from pointpv.likelihood.rg import log_likelihood as rg_logL
     from pointpv.mock.catalog import eta_to_velocity
+    from pointpv.rg.tree import build_tree
 
     u = eta_to_velocity(catalog["eta"], catalog["z_obs"])
+
+    # Build the pairing tree once — positions don't change across evaluations.
+    t0 = time.perf_counter()
+    tree = build_tree(pos)
+    t_tree_rg = time.perf_counter() - t0
+
     logL_mlf = np.empty(len(fs8_values))
     logL_rg = np.empty(len(fs8_values))
     times_mlf = np.empty(len(fs8_values))
@@ -117,10 +141,10 @@ def _scan_flip(
         times_mlf[i] = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        logL_rg[i] = rg_logL(u, C, pos, verbose=False)
+        logL_rg[i] = rg_logL(u, C, tree=tree, verbose=False)
         times_rg[i] = time.perf_counter() - t0
 
-    return logL_mlf, logL_rg, times_mlf, times_rg
+    return logL_mlf, logL_rg, times_mlf, times_rg, t_tree_rg
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +199,7 @@ def main() -> None:
         catalog = generate_synthetic_catalog(n=args.n, seed=args.seed, use_mag_limit=False)
         pos = catalog["pos"]
         print("Running FLIP/CAMB scan (may take a few minutes) ...")
-        logL_mlf, logL_rg, times_mlf, times_rg = _scan_flip(catalog, pos, fs8_grid)
+        logL_mlf, logL_rg, times_mlf, times_rg, t_tree_rg = _scan_flip(catalog, pos, fs8_grid)
         # Also plot catalog diagnostics
         from plot_catalog import plot_nz, plot_sky
         plot_nz(
@@ -206,7 +230,7 @@ def main() -> None:
         plot_sky(z_obs, ra, dec, stem="validate", outdir=args.output_dir)
 
         print(f"Scanning {args.n_grid} fsigma8 points ...")
-        logL_mlf, logL_rg, times_mlf, times_rg = _scan_synthetic(
+        logL_mlf, logL_rg, times_mlf, times_rg, t_tree_rg = _scan_synthetic(
             u, C_ref, pos, args.fs8_truth, fs8_grid
         )
 
@@ -222,8 +246,14 @@ def main() -> None:
     mean_t_rg = float(np.mean(times_rg))
     speedup = mean_t_mlf / max(mean_t_rg, 1e-9)
 
+    n_evals = len(fs8_grid)
+    amortized_tree = t_tree_rg / n_evals
+
     print(f"\n  Best-fit fsigma8 — MLF: {fs8_best_mlf:.4f}  RG: {fs8_best_rg:.4f}")
-    print(f"  Mean eval time  — MLF: {mean_t_mlf:.4f}s  RG: {mean_t_rg:.4f}s"
+    print(f"  Tree build time (RG, once): {t_tree_rg:.4f}s"
+          f"  amortized over {n_evals} evals: {amortized_tree:.4f}s/eval")
+    print(f"  Mean eval time  — MLF: {mean_t_mlf:.4f}s  RG (no tree): {mean_t_rg:.4f}s"
+          f"  RG (total/eval): {mean_t_rg + amortized_tree:.4f}s"
           f"  speedup: {speedup:.1f}×")
 
     # --- accuracy plot ---

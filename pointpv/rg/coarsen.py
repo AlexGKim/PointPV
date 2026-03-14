@@ -58,7 +58,8 @@ def rg_coarsen_all(
     verbose: bool = False,
     schur_tol: float = 0.0,
     return_diagnostics: bool = False,
-) -> "float | tuple[float, list[int]]":
+    fill_tol: float = 0.0,
+) -> "float | tuple[float, list[int]] | tuple[float, list[int], list[float]]":
     """
     Run all RG coarsening levels and return the log-likelihood.
 
@@ -72,17 +73,26 @@ def rg_coarsen_all(
         Hierarchical pairing tree from rg.tree.build_tree.
     verbose : bool
         Print per-level timing.
+    schur_tol : float
+        Skip rank-1 Schur update for rows where |diff_col[i]| ≤ schur_tol.
     return_diagnostics : bool
         If True, return (logL, level_sizes) where level_sizes[k] is the
         number of active nodes at the start of level k (before merging).
         level_sizes[0] == N and level_sizes[-1] == 1.
+        When fill_tol > 0, returns a 3-tuple (logL, level_sizes, fill_fractions).
+    fill_tol : float
+        When > 0, compute fill fraction (fraction of off-diagonal entries with
+        |C[i,j]| >= fill_tol) at the start of each level.  Appended to the
+        3-tuple return when return_diagnostics=True.
 
     Returns
     -------
     logL : float
         When return_diagnostics=False (default).
     (logL, level_sizes) : (float, list[int])
-        When return_diagnostics=True.
+        When return_diagnostics=True and fill_tol==0.
+    (logL, level_sizes, fill_fractions) : (float, list[int], list[float])
+        When return_diagnostics=True and fill_tol>0.
     """
     logL_acc = 0.0
 
@@ -91,12 +101,21 @@ def rg_coarsen_all(
     C_cur = C.copy()
 
     level_sizes: list[int] = [len(u_cur)]
+    fill_fractions: list[float] = []
+
+    # Compute fill fraction at level 0 (before any coarsening)
+    if fill_tol > 0.0:
+        mask0 = ~np.eye(len(u_cur), dtype=bool)
+        fill_fractions.append(float(np.mean(np.abs(C_cur[mask0]) >= fill_tol)))
 
     # Map from node object id to current local array index
     node_to_local: dict[int, int] = {id(n): i for i, n in enumerate(level_nodes)}
 
     for level_idx in range(1, tree.depth + 1):
-        t0 = time.perf_counter() if verbose else 0.0
+        t0 = time.perf_counter() if (verbose or fill_tol > 0.0) else 0.0
+
+        # fill fraction at start of this level = entry computed at end of previous level
+        fill = fill_fractions[level_idx - 1] if fill_tol > 0.0 else 0.0
 
         next_nodes = tree.levels[level_idx]
 
@@ -119,6 +138,7 @@ def rg_coarsen_all(
         # To avoid index-shifting during deletion we collect deletions and apply at the end.
         cols_to_delete: list[int] = []
         new_local: dict[int, int] = {}
+        level_active: list[float] = []
 
         for li, lj, node in pair_updates:
             c_ii = C_cur[li, li]
@@ -132,6 +152,8 @@ def rg_coarsen_all(
             diff_col = C_cur[:, li] - C_cur[:, lj]
             if schur_tol > 0.0:
                 active = np.abs(diff_col) > schur_tol
+                if fill_tol > 0.0:
+                    level_active.append(float(np.mean(active)))
                 if active.any():
                     dc = diff_col[active]
                     C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
@@ -164,11 +186,24 @@ def rg_coarsen_all(
 
         level_sizes.append(len(u_cur))
 
+        # Compute fill fraction of C_cur after deletions (= start of next level)
+        if fill_tol > 0.0 and len(u_cur) > 1:
+            mask = ~np.eye(len(u_cur), dtype=bool)
+            fill_fractions.append(float(np.mean(np.abs(C_cur[mask]) >= fill_tol)))
+        elif fill_tol > 0.0:
+            fill_fractions.append(0.0)  # single node: no off-diagonal
+
         if verbose:
-            print(
-                f"  [RG] level {level_idx}: {len(next_nodes)} nodes, "
-                f"t={time.perf_counter()-t0:.4f}s"
+            msg = (
+                f"  [RG] level {level_idx}: {len(next_nodes)} nodes"
             )
+            if fill_tol > 0.0:
+                msg += f", fill={fill * 100:.1f}%"
+                if schur_tol > 0.0 and level_active:
+                    mean_active = float(np.mean(level_active))
+                    msg += f", active={mean_active * 100:.1f}%"
+            msg += f", t={time.perf_counter()-t0:.4f}s"
+            print(msg)
 
     # Final single node
     assert len(u_cur) == 1, f"Expected 1 final node, got {len(u_cur)}"
@@ -176,6 +211,8 @@ def rg_coarsen_all(
 
     logL = float(logL_acc)
     if return_diagnostics:
+        if fill_tol > 0.0:
+            return logL, level_sizes, fill_fractions
         return logL, level_sizes
     return logL
 

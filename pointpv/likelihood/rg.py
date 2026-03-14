@@ -47,6 +47,7 @@ def log_likelihood(
     verbose: bool = False,
     schur_tol: float = 0.0,
     tree: RGTree | None = None,
+    fill_tol: float = 0.0,
 ) -> float:
     """
     McDonald RG log-likelihood.
@@ -66,6 +67,8 @@ def log_likelihood(
     tree : RGTree, optional
         Pre-built pairing tree.  When provided, ``build_tree`` is skipped,
         avoiding redundant work in repeated evaluations (e.g. fsigma8 scans).
+    fill_tol : float
+        Passed through to rg_coarsen_all for sparsity tracking.
 
     Returns
     -------
@@ -83,7 +86,7 @@ def log_likelihood(
         print(f"  [RG] tree built in {time.perf_counter()-t0:.3f}s, depth={tree.depth}")
 
     # Run the RG coarse-graining
-    logL = rg_coarsen_all(u, C, tree, verbose=verbose, schur_tol=schur_tol)
+    logL = rg_coarsen_all(u, C, tree, verbose=verbose, schur_tol=schur_tol, fill_tol=fill_tol)
 
     if verbose:
         print(f"  [RG] total wall time: {time.perf_counter()-t0:.3f}s")

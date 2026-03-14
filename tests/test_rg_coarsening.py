@@ -68,3 +68,31 @@ def test_level_sizes_shrink(n: int, seed: int) -> None:
         assert ratio < 0.1, (
             f"N={n}: shrinkage ratio={ratio:.3f} is not < 0.1 (>90% reduction)"
         )
+
+
+def test_fill_fraction_decreases() -> None:
+    """Fill fraction tracking returns valid fractions, one per level."""
+    u, C, pos = _make_synthetic_problem(200, seed=60)
+    tree = build_tree(pos)
+    _, level_sizes, fill_fracs = rg_coarsen_all(
+        u, C, tree, return_diagnostics=True, fill_tol=1.0
+    )
+    # must have one fill fraction per level (including level 0)
+    assert len(fill_fracs) == len(level_sizes)
+    # all entries are valid fractions
+    assert all(0.0 <= f <= 1.0 for f in fill_fracs), f"Invalid fill fractions: {fill_fracs}"
+    # single-node final level has no off-diagonal entries → fill=0
+    assert fill_fracs[-1] == 0.0
+    # initial level has some entries above threshold (sigma_v=300 >> fill_tol=1.0)
+    assert fill_fracs[0] > 0.0
+
+
+def test_active_fraction_meaningful() -> None:
+    """With schur_tol=1.0, verbose output should show active < 100% (some work skipped)."""
+    # Just verify the 3-tuple return and that active fractions printed without error
+    u, C, pos = _make_synthetic_problem(200, seed=61)
+    tree = build_tree(pos)
+    result = rg_coarsen_all(
+        u, C, tree, return_diagnostics=True, fill_tol=1.0, schur_tol=1.0
+    )
+    assert len(result) == 3

@@ -171,6 +171,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output-dir", default="figs", help="Output directory for figures (default: figs/)"
     )
+    p.add_argument(
+        "--fill-tol", type=float, default=0.0,
+        help="When > 0, run one diagnostic RG call and print sparsity table (km/s)²",
+    )
     return p.parse_args()
 
 
@@ -228,6 +232,20 @@ def main() -> None:
             m_lim=20.0, M_star=-21.5, alpha=-1.1, M_faint=-17.0,
         )
         plot_sky(z_obs, ra, dec, stem="validate", outdir=args.output_dir)
+
+        if args.fill_tol > 0.0:
+            from pointpv.rg.tree import build_tree as _build_tree
+            from pointpv.rg.coarsen import rg_coarsen_all as _rg_coarsen_all
+            _tree = _build_tree(pos)
+            _, _level_sizes, _fill_fracs = _rg_coarsen_all(
+                u, C_ref, _tree,
+                verbose=False, fill_tol=args.fill_tol,
+                return_diagnostics=True,
+            )
+            print(f"\n=== Sparsity evolution (fill_tol={args.fill_tol} (km/s)²) ===")
+            print(f"  {'Level':<6}  {'N':<6}  {'Fill%'}")
+            for _k, (_sz, _ff) in enumerate(zip(_level_sizes, _fill_fracs)):
+                print(f"  {_k:<6}  {_sz:<6}  {_ff * 100:.1f}")
 
         print(f"Scanning {args.n_grid} fsigma8 points ...")
         logL_mlf, logL_rg, times_mlf, times_rg, t_tree_rg = _scan_synthetic(

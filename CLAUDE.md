@@ -26,9 +26,13 @@ the coarsening loop.
 
 The active sparse path is in `rg_coarsen_all` via the `sparse_tol` parameter:
 - sparse_tol=0.0 (default): dense numpy path, O(N³)
-- sparse_tol=X > 0: scipy.sparse.csc_matrix path, O(N log N) when combined with
-  schur_tol > 0.  Off-diagonal entries below sparse_tol are zeroed after each level.
-  Requires schur_tol > 0 (enforced by ValueError).
+- sparse_tol=X > 0: fully sparse path — C_cur stored as scipy.sparse.csc_matrix;
+  column differences kept as sparse (N,1) vectors (no todense()); schur_tol threshold
+  applied directly to stored values; rank-1 Schur correction computed as a true sparse
+  outer product (diff_col_sp @ diff_col_sp.T, no dense k×k intermediate); u update
+  touches only the k non-zero rows via COO indices; off-diagonal entries below
+  sparse_tol zeroed after each level. Requires schur_tol > 0 (enforced by ValueError).
+  O(k²) per pair, O(N log N) asymptotically when k = O(log N).
 
 ## Environments
 - Laptop:     `generic` conda env works (has numpy, scipy, astropy, camb, pytest)

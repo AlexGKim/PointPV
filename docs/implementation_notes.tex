@@ -165,11 +165,25 @@ $\varepsilon_\mathrm{schur}=5$ gives $|\Delta\mathcal{L}|\sim 10^{-5}$.
 the full dense Schur update (step~4 of RG-dense) would immediately fill
 any sparse structure.
 
-\paragraph{Sparse storage.}
+\paragraph{Sparse storage and fully sparse Schur update.}
 $C$ is stored as a \texttt{scipy.sparse.csc\_matrix} from the outset.
-Column extractions (\texttt{getcol}) return only the stored non-zeros,
-yielding a sparse $\mathbf{d}_\mathrm{col}$ with fewer large entries
-and therefore a smaller active set $\kappa$.
+For each pair $(i,j)$ the difference column is computed and kept sparse
+throughout — no dense $N$-vector is ever materialised:
+\begin{equation}
+  \mathbf{v} = \texttt{getcol}(i) - \texttt{getcol}(j)
+  \in \mathbb{R}^{N\times 1} \quad\text{(sparse)}.
+\end{equation}
+The \texttt{schur\_tol} threshold is applied directly to the stored values
+of $\mathbf{v}$, leaving $\kappa \ll N$ non-zeros.
+The rank-1 Schur correction is then a true sparse outer product,
+\begin{equation}
+  \Delta C = \frac{\mathbf{v}\,\mathbf{v}^\top}{c_\mathrm{dd}}
+  \quad\text{(at most $\kappa^2$ non-zeros)},
+\end{equation}
+computed as the scipy sparse multiply $\mathbf{v} @ \mathbf{v}^\top$ with
+no dense $\kappa\times\kappa$ intermediate.
+The $\mathbf{u}$ update touches only the $\kappa$ non-zero rows via COO
+row indices, replacing an $O(N)$ masked assignment with $O(\kappa)$.
 
 \paragraph{Re-sparsification.}
 After processing all pairs at each level, entries below
@@ -183,12 +197,19 @@ $\varepsilon_\mathrm{sparse} = \texttt{sparse\_tol}$ are zeroed:
 This prevents fill-in from accumulating across levels.
 
 \paragraph{Format conversion chain.}
-Each level requires:
+Per pair (Schur update):
 \begin{equation*}
-  \underbrace{\texttt{csc}}_{\text{column access}}
-  \;\to\; \underbrace{\texttt{lil}}_{\text{row/col addition}}
+  \underbrace{\texttt{csc}}_{\text{getcol}}
+  \;\xrightarrow{\text{threshold}}\; \texttt{csr}
+  \;\xrightarrow{\text{outer product}}\; \texttt{csc}
+  \;\xrightarrow{\text{u update}}\; \texttt{coo}.
+\end{equation*}
+Per level (sum-mode accumulation and re-sparsification):
+\begin{equation*}
+  \texttt{csc}
+  \;\xrightarrow{\text{row/col add}}\; \texttt{lil}
   \;\to\; \texttt{csc}
-  \;\to\; \underbrace{\texttt{csr}}_{\text{zero elimination}}
+  \;\xrightarrow{\text{zero elim}}\; \texttt{csr}
   \;\to\; \texttt{csc}.
 \end{equation*}
 These conversions carry fixed Python overhead that dominates at small $N$

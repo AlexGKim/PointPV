@@ -344,7 +344,7 @@ def parse_args() -> argparse.Namespace:
         help="schur_tol values for RG-schur variants (sparse_tol=0 for these curves)",
     )
     p.add_argument(
-        "--sparse-tols", type=float, nargs="*", default=[1.0, 10.0, 100.0, 1000.0],
+        "--sparse-tols", type=float, nargs="*", default=[1.0, 10.0, 100.0],
         metavar="TOL",
         help="sparse_tol values (km/s)² for RG-sparse variants; pass no values to suppress",
     )

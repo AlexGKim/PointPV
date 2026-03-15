@@ -1,5 +1,5 @@
 \documentclass[11pt]{article}
-\usepackage{amsmath}
+\usepackage{amsmath,amssymb}
 \usepackage{booktabs}
 \usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
 \usepackage[margin=2.5cm]{geometry}
@@ -74,8 +74,18 @@ At each level $\ell$, every pair $(i,j)$ is processed in turn:
   \item Compute the \emph{difference column}
         $\mathbf{d}_\mathrm{col} = C_{:,i} - C_{:,j}$
         (column~$i$ minus column~$j$ of the current covariance).
-  \item Apply the \textbf{rank-1 Schur update} to $C$ and $\mathbf{u}$
-        (details differ by variant; see below).
+  \item Apply the \textbf{rank-1 Schur update} to $C$ and $\mathbf{u}$.
+        Having observed the difference $d = u_i - u_j$, the remaining
+        nodes are no longer independent of that observation.
+        The update propagates this conditional information into the
+        surviving covariance: every other node $k$ that was correlated
+        with $i$ or $j$ has its variance and cross-covariances reduced
+        to reflect what has already been learned from $d$.
+        This is the Gaussian conditioning identity applied to the
+        difference mode; without it, subsequent pair merges would
+        overcount the information already extracted.
+        The exact form and which rows are updated differ by variant
+        (see below).
   \item Accumulate the sum mode:
         $u_i \leftarrow u_i + u_j$,\;
         $C_{i,:} \leftarrow C_{i,:} + C_{j,:}$,\;

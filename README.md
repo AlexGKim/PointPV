@@ -84,13 +84,24 @@ See `docs/results.md` (updated as experiments run).
 
 ```bash
 PY=$(conda info --base)/envs/generic/bin/python
+$PY -m pytest tests/ -v -m "not flip and not slow"
+
+# Or via Makefile:
+make test-fast
+```
+
+### Slow tests (scaling benchmarks, no FLIP)
+
+```bash
 $PY -m pytest tests/ -v -m "not flip"
+make test-slow
 ```
 
 ### Full suite including FLIP covariance tests (~2–5 min)
 
 ```bash
 $PY -m pytest tests/ -v
+make test-all
 ```
 
 ### Test file summary
@@ -127,6 +138,30 @@ Output files produced:
 - `figs/validate_scaling.png` — wall-clock timing comparison
 - `figs/nz_validate.pdf` — n(z) histogram
 - `figs/sky_validate.pdf` — Mollweide sky map
+
+Or via Makefile: `make validate`
+
+### Runtime scaling benchmark
+
+Measures wall-clock time for MLF, RG-dense, and RG-fast across a range of
+catalog sizes and produces a two-panel figure: log-log runtime scaling (with
+N³ and N log N reference lines) and |ΔlogL| accuracy vs N.
+
+```bash
+# Default: N = 100, 1000, 10000  (N=10000 ~800 MB RAM, MLF ~30-120 s)
+$PY scripts/benchmark_scaling.py
+
+# Laptop-friendly
+$PY scripts/benchmark_scaling.py --sizes 100 500 1000 2000
+
+# Skip MLF for large N (only time RG methods)
+$PY scripts/benchmark_scaling.py --skip-mlf-large 5000
+
+# Via Makefile (N=100, 1000)
+make benchmark
+```
+
+Output: `figs/benchmark_scaling.png`
 
 ## References
 

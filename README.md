@@ -163,6 +163,30 @@ make benchmark
 
 Output: `figs/benchmark_scaling.png`
 
+## Status: incomplete items
+
+### Local (laptop)
+
+| Item | Details |
+|------|---------|
+| No mock catalog yet | `data/` does not exist. Run `python scripts/generate_mock.py --synthetic --n 1000 --output data/mock_1000.npz` before any script. |
+| `docs/results.md` is empty | All benchmark tables are placeholders. Populate by running the pipeline end-to-end. |
+| FLIP tests not exercised locally | Tests marked `-m flip` are excluded from the fast suite. The covariance construction path (`pointpv/covariance/velocity.py` + FLIP) has not been run in CI. |
+| `sparse_ops.py` not wired in | `get_solver()` / `ScipySolver` / `PETScSolver` are defined but never called by `rg_coarsen_all`. The coarsening loop uses `scipy.sparse` directly. |
+
+### NERSC (Perlmutter)
+
+| Item | Details |
+|------|---------|
+| `--account=m1234` placeholder | Both `slurm/baseline_job.sh` and `slurm/rg_job.sh` use a dummy account code. Update before submitting. |
+| `pointpv-gpu` env not created | Run `conda env create -f environment_gpu.yml` on Perlmutter before submitting jobs. |
+| AbacusSummit path unconfirmed | `docs/data.md` lists a likely path but notes it must be confirmed. No end-to-end run on real data yet. |
+| CuPy GPU Cholesky path untested | `POINTPV_BACKEND=cupy` in `baseline_job.sh` triggers a CuPy code path in `mlf.py` that has not been run on an A100. |
+| `POINTPV_BACKEND=petsc` has no effect | Set in `rg_job.sh` but `sparse_ops.py` is not called by the RG loop. Safe to change to `scipy` or omit. |
+| `PETScSolver.logdet()` falls back to scipy | Even when PETSc is active, log-det is computed via `scipy.sparse.linalg.splu` (PETSc has no direct equivalent). Annotated in `sparse_ops.py:193`. |
+
+---
+
 ## References
 
 - McDonald 2019, PhysRevD.100.043511

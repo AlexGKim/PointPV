@@ -166,37 +166,37 @@ def rg_coarsen_all(
             d = u_cur[li] - u_cur[lj]
             logL_acc += -0.5 * (np.log(abs(c_dd)) + d**2 / c_dd) + np.log(2.0)
 
-            # Column extraction: O(nnz) for sparse, O(N) for dense
             if sp.issparse(C_cur):
-                col_i = np.asarray(C_cur.getcol(li).todense()).ravel()
-                col_j = np.asarray(C_cur.getcol(lj).todense()).ravel()
-                diff_col = col_i - col_j
-            else:
-                diff_col = C_cur[:, li] - C_cur[:, lj]
-
-            # Schur update (rank-1); skip rows/cols where diff_col is negligible
-            if schur_tol > 0.0:
-                active = np.abs(diff_col) > schur_tol
+                # Fully sparse path: no densification, sparse rank-1 outer product.
+                # diff_sp is (N,1); schur_tol threshold applied to stored values only.
+                diff_sp = (C_cur.getcol(li) - C_cur.getcol(lj)).tocsr()
+                diff_sp.data[np.abs(diff_sp.data) <= schur_tol] = 0
+                diff_sp.eliminate_zeros()
                 if fill_tol > 0.0:
-                    level_active.append(float(np.mean(active)))
-                if active.any():
-                    dc = diff_col[active]
-                    rows = np.where(active)[0]
-                    if sp.issparse(C_cur):
-                        n = len(rows)
-                        correction = sp.coo_matrix(
-                            (np.outer(dc, dc).ravel() / c_dd,
-                             (np.repeat(rows, n), np.tile(rows, n))),
-                            shape=C_cur.shape,
-                        ).tocsc()
-                        C_cur = C_cur - correction
-                    else:
-                        C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
-                    u_cur[active] -= (dc / c_dd) * d
+                    level_active.append(diff_sp.nnz / len(u_cur))
+                if diff_sp.nnz > 0:
+                    # Sparse rank-1 Schur correction: (N,1) @ (1,N) → (N,N) sparse
+                    diff_col_sp = diff_sp.tocsc()
+                    correction = (diff_col_sp @ diff_col_sp.T / c_dd).tocsc()
+                    C_cur = (C_cur - correction).tocsc()
+                    # u update over non-zero rows only — O(k), no N-vector
+                    diff_coo = diff_col_sp.tocoo()
+                    u_cur[diff_coo.row] -= (diff_coo.data / c_dd) * d
             else:
-                scale = diff_col / c_dd
-                C_cur -= scale[:, np.newaxis] * diff_col[np.newaxis, :]
-                u_cur -= scale * d
+                # Dense path: unchanged.
+                diff_col = C_cur[:, li] - C_cur[:, lj]
+                if schur_tol > 0.0:
+                    active = np.abs(diff_col) > schur_tol
+                    if fill_tol > 0.0:
+                        level_active.append(float(np.mean(active)))
+                    if active.any():
+                        dc = diff_col[active]
+                        C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
+                        u_cur[active] -= (dc / c_dd) * d
+                else:
+                    scale = diff_col / c_dd
+                    C_cur -= scale[:, np.newaxis] * diff_col[np.newaxis, :]
+                    u_cur -= scale * d
 
             # Sum-mode row/col accumulation
             u_cur[li] += u_cur[lj]

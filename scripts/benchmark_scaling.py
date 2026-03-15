@@ -15,10 +15,17 @@ Configurable variants:
   RG-sparse=X — one curve per --sparse-tols value (schur_tol from
                 --sparse-schur-tol, default 1.0; sparse_tol=X)
 
+Covariance modes:
+  default  — synthetic exponential kernel (no FLIP required)
+  --flip   — real FLIP/CAMB covariance using AbacusSummit cosmology; requires
+             FLIP and CAMB to be installed.  Covariance is built once per N
+             before timing begins; build time is printed separately.
+
 Usage
 -----
     python scripts/benchmark_scaling.py
     python scripts/benchmark_scaling.py --sizes 100 500 1000 2000
+    python scripts/benchmark_scaling.py --no-flip --sizes 100 500 1000
     python scripts/benchmark_scaling.py --schur-tols 0.1 0.5 1.0 5.0
     python scripts/benchmark_scaling.py --schur-tols 0.5 1.0 --sparse-tols 1 100
     python scripts/benchmark_scaling.py --sparse-tols --schur-tols 0.1 0.5 1.0
@@ -62,6 +69,44 @@ def _make_problem(n: int, seed: int = 42, length_scale: float = 50.0,
     C += np.eye(n) * (sigma_v * 0.05) ** 2
     u = rng.standard_normal(n) * sigma_v * 0.1
     return u, C, pos
+
+
+def _make_flip_problem(
+    n: int,
+    seed: int = 42,
+    fsigma8: float = 0.47,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """
+    Build a PV problem using a real FLIP/CAMB covariance matrix.
+
+    Generates a synthetic on-sky catalog (uniform redshift, full sky) and
+    computes the velocity-velocity covariance via FLIP at the given fsigma8.
+
+    Returns
+    -------
+    u : (N,) array, km/s
+    C : (N, N) array, (km/s)²
+    pos : (N, 3) array, Mpc/h  — comoving Cartesian positions for tree building
+    t_cov : float  — wall time for the FLIP covariance build [s]
+    """
+    import sys as _sys
+    _sys.path.insert(0, str(_ROOT / "scripts"))
+    from generate_mock import generate_synthetic_catalog
+    from pointpv.covariance.velocity import build_covariance
+    from pointpv.mock.catalog import eta_to_velocity
+
+    print(f"  N={n}: generating synthetic on-sky catalog ...", flush=True)
+    catalog = generate_synthetic_catalog(n, seed=seed, use_mag_limit=False)
+
+    print(f"  N={n}: building FLIP/CAMB covariance (fsigma8={fsigma8}) ...", flush=True)
+    t0 = time.perf_counter()
+    C = build_covariance(catalog, fsigma8=fsigma8)
+    t_cov = time.perf_counter() - t0
+    print(f"  N={n}: covariance built in {t_cov:.2f}s", flush=True)
+
+    u = eta_to_velocity(catalog["eta"], catalog["z_obs"])
+    pos = catalog["pos"]
+    return u, C, pos, t_cov
 
 
 # ---------------------------------------------------------------------------
@@ -125,12 +170,18 @@ def benchmark_n(
     sparse_tols: list[float],
     sparse_schur_tol: float,
     skip_mlf: bool,
+    use_flip: bool = False,
+    fsigma8: float = 0.47,
 ) -> dict:
     """Build a problem of size N, time all methods, and record logL values."""
     from pointpv.rg.tree import build_tree
 
-    print(f"  N={n}: constructing problem ...", flush=True)
-    u, C, pos = _make_problem(n, seed=42 + n)
+    t_cov = 0.0
+    if use_flip:
+        u, C, pos, t_cov = _make_flip_problem(n, seed=42 + n, fsigma8=fsigma8)
+    else:
+        print(f"  N={n}: constructing problem ...", flush=True)
+        u, C, pos = _make_problem(n, seed=42 + n)
 
     print(f"  N={n}: building tree ...", flush=True)
     t0 = time.perf_counter()
@@ -140,7 +191,7 @@ def benchmark_n(
 
     method_list = _build_methods(tree, schur_tols, sparse_tols, sparse_schur_tol, skip_mlf)
 
-    results: dict = {"n": n, "t_tree": t_tree, "methods": {}}
+    results: dict = {"n": n, "t_tree": t_tree, "t_cov": t_cov, "methods": {}}
     for label, fn in method_list:
         print(f"  N={n}: timing {label} ({n_repeats} repeat(s)) ...", flush=True)
         times: list[float] = []
@@ -170,12 +221,18 @@ def print_tables(all_results: list[dict]) -> None:
     col_w = 14
 
     # --- timing table ---
-    header = f"{'N':>8}" + "".join(f"  {lbl:>{col_w}}" for lbl in labels)
+    has_cov = any(res.get("t_cov", 0.0) > 0 for res in all_results)
+    header = f"{'N':>8}"
+    if has_cov:
+        header += f"  {'cov build (s)':>{col_w}}"
+    header += "".join(f"  {lbl:>{col_w}}" for lbl in labels)
     print("\n=== Best wall time per evaluation (s) ===")
     print(header)
     print("-" * len(header))
     for res in all_results:
         row = f"{res['n']:>8d}"
+        if has_cov:
+            row += f"  {res.get('t_cov', 0.0):>{col_w}.2f}"
         for lbl in labels:
             if lbl in res["methods"]:
                 t = min(res["methods"][lbl]["times"])
@@ -361,6 +418,14 @@ def parse_args() -> argparse.Namespace:
         help="Omit MLF for N >= this value (MLF is O(N^3) and very slow at large N).",
     )
     p.add_argument(
+        "--no-flip", action="store_true",
+        help="Use synthetic exponential covariance instead of FLIP/CAMB.",
+    )
+    p.add_argument(
+        "--fsigma8", type=float, default=0.47, metavar="FS8",
+        help="fsigma8 value for FLIP covariance build (--flip only).",
+    )
+    p.add_argument(
         "--output-dir", default="figs",
         help="Directory for output figure.",
     )
@@ -381,6 +446,8 @@ def main() -> None:
 
     print("=== benchmark_scaling.py ===")
     print(f"  sizes            = {args.sizes}")
+    use_flip = not args.no_flip
+    print(f"  covariance       = {'synthetic exponential' if args.no_flip else 'FLIP/CAMB (fsigma8=' + str(args.fsigma8) + ')'}")
     print(f"  schur-tols       = {schur_tols}")
     print(f"  sparse-tols      = {sparse_tols}  (km/s)²")
     print(f"  sparse-schur-tol = {args.sparse_schur_tol}")
@@ -401,7 +468,7 @@ def main() -> None:
         tag = f"MLF skipped: N >= {args.skip_mlf_large}" if skip_mlf else f"n_repeats={n_rep}"
         print(f"\n--- N={n} ({tag}) ---")
         res = benchmark_n(n, n_rep, schur_tols, sparse_tols, args.sparse_schur_tol,
-                          skip_mlf=skip_mlf)
+                          skip_mlf=skip_mlf, use_flip=use_flip, fsigma8=args.fsigma8)
         all_results.append(res)
 
     print_tables(all_results)

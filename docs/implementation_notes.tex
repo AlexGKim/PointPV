@@ -1,0 +1,246 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue]{hyperref}
+\usepackage[margin=2.5cm]{geometry}
+
+\title{Implementation Notes: Computational Variants of the\\
+       Peculiar Velocity Log-Likelihood}
+\author{PointPV}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The Gaussian log-likelihood for peculiar velocity surveys can be evaluated
+by four computational methods that trade accuracy for speed.
+This note documents the implementation approximations introduced by each
+variant and their consequences for cost and accuracy.
+The underlying mathematics is described in \texttt{docs/method\_mlf.md}
+and \texttt{docs/method\_rg.md}.
+\end{abstract}
+
+% ------------------------------------------------------------------
+\section{The log-likelihood}
+
+All four methods evaluate the same quantity,
+\begin{equation}
+  \mathcal{L}(\theta)
+  = -\tfrac{1}{2}\bigl[\log|C(\theta)| + \mathbf{u}^\top C(\theta)^{-1}\mathbf{u}\bigr],
+\end{equation}
+where $\mathbf{u}$ is the $N$-vector of line-of-sight peculiar velocities
+and $C(\theta)$ is the $N\times N$ velocity-velocity covariance matrix
+parameterised by $\theta = f\sigma_8$.
+Entries of $C$ are in units of $(\mathrm{km\,s^{-1}})^2$; diagonal
+values are of order $\sigma_v^2 \approx (300\,\mathrm{km\,s^{-1}})^2
+= 9\times 10^4\,(\mathrm{km\,s^{-1}})^2$.
+
+% ------------------------------------------------------------------
+\section{MLF: direct Cholesky}
+
+\textbf{No approximations.}
+The matrix $C$ is stored as a dense \texttt{numpy} array throughout.
+
+\begin{enumerate}
+  \item Compute the Cholesky factor $C = LL^\top$ via
+        \texttt{scipy.linalg.cho\_factor} (CPU) or
+        \texttt{cupy.linalg.cholesky} (GPU).
+  \item $\log|C| = 2\sum_i \log L_{ii}$.
+  \item Solve $L\mathbf{z} = \mathbf{u}$ by forward substitution;
+        $\mathbf{u}^\top C^{-1}\mathbf{u} = \mathbf{z}^\top\mathbf{z}$.
+  \item Return $\mathcal{L} = -\tfrac{1}{2}(\log|C| + \mathbf{z}^\top\mathbf{z})$.
+\end{enumerate}
+
+\noindent\textbf{Cost:} $O(N^3)$ per evaluation.
+
+% ------------------------------------------------------------------
+\section{RG coarse-graining: common structure}
+
+The McDonald~(2019) RG algorithm builds a binary KD-tree that pairs
+nearby galaxies at each level.
+At each level $\ell$, every pair $(i,j)$ is processed in turn:
+
+\begin{enumerate}
+  \item Extract scalars $C_{ii}$, $C_{jj}$, $C_{ij}$ and the
+        difference-mode variance
+        $c_\mathrm{dd} = C_{ii} + C_{jj} - 2C_{ij}$.
+  \item Accumulate the difference-mode log-likelihood contribution
+        \begin{equation}
+          \Delta\mathcal{L}_{ij}
+          = -\tfrac{1}{2}\Bigl(\log c_\mathrm{dd}
+            + \frac{(u_i - u_j)^2}{c_\mathrm{dd}}\Bigr).
+        \end{equation}
+  \item Compute the \emph{difference column}
+        $\mathbf{d}_\mathrm{col} = C_{:,i} - C_{:,j}$
+        (column~$i$ minus column~$j$ of the current covariance).
+  \item Apply the \textbf{rank-1 Schur update} to $C$ and $\mathbf{u}$
+        (details differ by variant; see below).
+  \item Accumulate the sum mode:
+        $u_i \leftarrow u_i + u_j$,\;
+        $C_{i,:} \leftarrow C_{i,:} + C_{j,:}$,\;
+        $C_{:,i} \leftarrow C_{:,i} + C_{:,j}$.
+  \item Delete row and column $j$; the matrix shrinks by one.
+\end{enumerate}
+
+After all levels a single node remains, contributing
+$-\tfrac{1}{2}(\log C_{00} + u_0^2/C_{00})$.
+
+The three RG variants differ only in how step~4 is implemented
+and how $C$ is stored.
+
+% ------------------------------------------------------------------
+\subsection{RG-dense (\texttt{schur\_tol}$=0$, \texttt{sparse\_tol}$=0$)}
+
+\textbf{No approximations.}
+The full rank-1 correction is applied to every row:
+\begin{equation}
+  C \;\leftarrow\; C
+  - \frac{\mathbf{d}_\mathrm{col}\,\mathbf{d}_\mathrm{col}^\top}{c_\mathrm{dd}},
+  \qquad
+  \mathbf{u} \;\leftarrow\; \mathbf{u}
+  - \frac{\mathbf{d}_\mathrm{col}}{c_\mathrm{dd}}\,(u_i - u_j).
+\end{equation}
+This is an $O(N^2)$ outer product.
+$C$ is stored as a dense \texttt{numpy} array throughout.
+
+\noindent\textbf{Cost:} $O(N^2)$ per pair, $O(N^3)$ total.
+
+% ------------------------------------------------------------------
+\subsection{RG-schur (\texttt{schur\_tol}$>0$, \texttt{sparse\_tol}$=0$)}
+
+\textbf{Approximation: rows with negligible difference-column entries
+are skipped.}
+
+Define the \emph{active mask}
+\begin{equation}
+  \mathrm{active}_k
+  = \bigl[\,|d_{\mathrm{col},k}| > \varepsilon_\mathrm{schur}\,\bigr],
+\end{equation}
+where $\varepsilon_\mathrm{schur} = \texttt{schur\_tol}$.
+The update is restricted to active rows and columns:
+\begin{equation}
+  C[\mathrm{active},\mathrm{active}]
+  \;\leftarrow\;
+  C[\mathrm{active},\mathrm{active}]
+  - \frac{\mathbf{d}_\mathrm{col}[\mathrm{active}]\,
+          \mathbf{d}_\mathrm{col}[\mathrm{active}]^\top}{c_\mathrm{dd}}.
+\end{equation}
+
+\textbf{Justification.}
+Galaxy $k$ is well-correlated with both $i$ and $j$ only when it is
+spatially close to both.
+For distant $k$, correlations $C_{ki} \approx C_{kj} \approx 0$,
+so $d_{\mathrm{col},k} \approx 0$ and the rank-1 correction to row $k$
+is negligible.
+
+$C$ remains a dense \texttt{numpy} array.
+Let $\kappa = |\mathrm{active}|$ denote the number of active rows.
+
+\noindent\textbf{Cost:} $O(\kappa^2)$ per pair with $\kappa < N$;
+sub-cubic overall when the covariance decays with distance.
+
+\noindent\textbf{Accuracy:} $|\Delta\mathcal{L}|$ grows with
+$\varepsilon_\mathrm{schur}$.
+Typical values: $\varepsilon_\mathrm{schur}=0.1$ gives
+$|\Delta\mathcal{L}|\sim 10^{-7}$;
+$\varepsilon_\mathrm{schur}=5$ gives $|\Delta\mathcal{L}|\sim 10^{-5}$.
+
+% ------------------------------------------------------------------
+\subsection{RG-sparse (\texttt{schur\_tol}$>0$, \texttt{sparse\_tol}$>0$)}
+
+\textbf{Two approximations combined: row skipping and matrix sparsification.}
+
+\texttt{sparse\_tol}~$>0$ requires \texttt{schur\_tol}~$>0$;
+the full dense Schur update (step~4 of RG-dense) would immediately fill
+any sparse structure.
+
+\paragraph{Sparse storage.}
+$C$ is stored as a \texttt{scipy.sparse.csc\_matrix} from the outset.
+Column extractions (\texttt{getcol}) return only the stored non-zeros,
+yielding a sparse $\mathbf{d}_\mathrm{col}$ with fewer large entries
+and therefore a smaller active set $\kappa$.
+
+\paragraph{Re-sparsification.}
+After processing all pairs at each level, entries below
+$\varepsilon_\mathrm{sparse} = \texttt{sparse\_tol}$ are zeroed:
+\begin{equation}
+  C_{ij} \leftarrow 0
+  \quad\text{if}\quad
+  |C_{ij}| < \varepsilon_\mathrm{sparse},
+  \quad i \neq j.
+\end{equation}
+This prevents fill-in from accumulating across levels.
+
+\paragraph{Format conversion chain.}
+Each level requires:
+\begin{equation*}
+  \underbrace{\texttt{csc}}_{\text{column access}}
+  \;\to\; \underbrace{\texttt{lil}}_{\text{row/col addition}}
+  \;\to\; \texttt{csc}
+  \;\to\; \underbrace{\texttt{csr}}_{\text{zero elimination}}
+  \;\to\; \texttt{csc}.
+\end{equation*}
+These conversions carry fixed Python overhead that dominates at small $N$
+($N\lesssim 500$), causing RG-sparse to be \emph{slower} than RG-schur
+at moderate sizes.
+The break-even point depends on the correlation length relative to the
+survey volume.
+
+\noindent\textbf{Cost:} $O(\kappa^2)$ per pair with $\kappa \ll N$;
+$O(N\log N)$ asymptotically when the number of non-zeros per column
+is $O(\log N)$.
+
+\noindent\textbf{Accuracy:} combines the error from \texttt{schur\_tol}
+with an additional systematic from zeroing entries below
+\texttt{sparse\_tol}.
+
+% ------------------------------------------------------------------
+\section{Comparison summary}
+
+\begin{table}[h]
+\centering
+\caption{Computational variants of the log-likelihood.
+$\kappa$ = number of active rows per pair ($\kappa \leq N$).}
+\label{tab:variants}
+\begin{tabular}{lllll}
+\toprule
+Variant & $C$ storage & Schur update & Per-pair cost & Complexity \\
+\midrule
+MLF        & dense \texttt{numpy}    & Cholesky (no pairs) & ---          & $O(N^3)$ \\
+RG-dense   & dense \texttt{numpy}    & all $N$ rows        & $O(N^2)$     & $O(N^3)$ \\
+RG-schur   & dense \texttt{numpy}    & $\kappa$ active rows & $O(\kappa^2)$, $\kappa < N$  & sub-cubic \\
+RG-sparse  & \texttt{csc\_matrix}    & $\kappa$ active rows & $O(\kappa^2)$, $\kappa \ll N$ & $O(N\log N)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ------------------------------------------------------------------
+\section{Parameter reference}
+
+\begin{description}
+  \item[\texttt{schur\_tol}] ($\varepsilon_\mathrm{schur}$, units:
+    $(\mathrm{km\,s^{-1}})^2$, default $0$)\quad
+    Threshold on $|d_{\mathrm{col},k}| = |C_{ki} - C_{kj}|$ below which
+    row $k$ is excluded from the rank-1 Schur update.
+    Set to $0$ for the exact dense update.
+
+  \item[\texttt{sparse\_tol}] ($\varepsilon_\mathrm{sparse}$, units:
+    $(\mathrm{km\,s^{-1}})^2$, default $0$)\quad
+    Threshold for zeroing off-diagonal entries after each coarsening level.
+    Requires \texttt{schur\_tol}~$>0$.
+    Set to $0$ to disable sparse storage.
+\end{description}
+
+\noindent Implemented in \texttt{pointpv/rg/coarsen.py:rg\_coarsen\_all}.
+
+% ------------------------------------------------------------------
+\begin{thebibliography}{9}
+\bibitem{mcdonald2019}
+  P.~McDonald, \textit{Clustering statistics of cosmological perturbations},
+  Phys.\ Rev.\ D \textbf{100}, 043511 (2019).
+\bibitem{lai2025}
+  C.~Lai et al., arXiv:2512.03229 (2025).
+\end{thebibliography}
+
+\end{document}

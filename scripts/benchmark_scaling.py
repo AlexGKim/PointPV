@@ -6,30 +6,30 @@ Measures wall-clock time per likelihood evaluation at multiple catalog sizes,
 compares log-likelihood values between methods, and produces a two-panel
 scaling + accuracy figure.
 
-Three baseline methods are always timed:
+Fixed baselines always timed:
   MLF       — direct Cholesky, O(N^3)
-  RG-dense  — McDonald RG, dense path (schur_tol=0), O(N^3)
-  RG-schur  — McDonald RG, Schur approximation only (schur_tol=1, sparse_tol=0)
+  RG-dense  — McDonald RG, dense path (schur_tol=0, sparse_tol=0), O(N^3)
 
-Additionally, RG-sparse variants are timed at each requested sparse_tol value
-(all use schur_tol=1.0). The sparse_tol threshold (in (km/s)^2) controls how
-aggressively off-diagonal entries are zeroed after each coarsening level; higher
-values produce sparser matrices and faster computation at the cost of accuracy.
+Configurable variants:
+  RG-schur=X  — one curve per --schur-tols value (sparse_tol=0, schur_tol=X)
+  RG-sparse=X — one curve per --sparse-tols value (schur_tol from
+                --sparse-schur-tol, default 1.0; sparse_tol=X)
 
 Usage
 -----
     python scripts/benchmark_scaling.py
     python scripts/benchmark_scaling.py --sizes 100 500 1000 2000
-    python scripts/benchmark_scaling.py --sizes 100 1000 10000 --n-repeats 1
-    python scripts/benchmark_scaling.py --sparse-tols 0.1 1 10 100 1000
+    python scripts/benchmark_scaling.py --schur-tols 0.1 0.5 1.0 5.0
+    python scripts/benchmark_scaling.py --schur-tols 0.5 1.0 --sparse-tols 1 100
+    python scripts/benchmark_scaling.py --sparse-tols --schur-tols 0.1 0.5 1.0
     python scripts/benchmark_scaling.py --skip-mlf-large 5000
 
 Notes
 -----
 * For N >= 2000, set --n-repeats 1 to keep runtime manageable.
 * MLF at N=10000 requires ~800 MB RAM and can take 30-120 s.
-  Use --skip-mlf-large N to omit MLF for N >= that threshold.
 * For a full fsigma8-grid accuracy check at one N, see validate_fsigma8.py.
+* The sparse path requires schur_tol > 0 (see --sparse-schur-tol).
 """
 
 from __future__ import annotations
@@ -52,12 +52,7 @@ sys.path.insert(0, str(_ROOT))
 
 def _make_problem(n: int, seed: int = 42, length_scale: float = 50.0,
                   sigma_v: float = 300.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Build a synthetic PV problem with N galaxies.
-
-    Uses scipy.spatial.distance.cdist to avoid the (N, N, 3) intermediate
-    array that numpy broadcasting would require (~2.4 GB at N=10000).
-    """
+    """Build a synthetic PV problem with N galaxies using cdist (memory-efficient)."""
     from scipy.spatial.distance import cdist
 
     rng = np.random.default_rng(seed)
@@ -73,9 +68,18 @@ def _make_problem(n: int, seed: int = 42, length_scale: float = 50.0,
 # Method list builder
 # ---------------------------------------------------------------------------
 
+def _fmt_tol(v: float) -> str:
+    """Format a tolerance value concisely: 1.0 → '1', 0.1 → '0.1', 1000.0 → '1000'."""
+    if v == int(v):
+        return str(int(v))
+    return f"{v:g}"
+
+
 def _build_methods(
     tree,
+    schur_tols: list[float],
     sparse_tols: list[float],
+    sparse_schur_tol: float,
     skip_mlf: bool,
 ) -> list[tuple[str, object]]:
     """Return (label, callable) pairs for all methods to benchmark."""
@@ -90,29 +94,24 @@ def _build_methods(
     methods.append(
         ("RG-dense", lambda u, C: rg_logL(u, C, tree=tree, verbose=False))
     )
-    methods.append((
-        "RG-schur",
-        lambda u, C: rg_logL(u, C, tree=tree, schur_tol=1.0, verbose=False),
-    ))
 
-    for stol in sparse_tols:
-        label = f"RG-sparse={_fmt_tol(stol)}"
-        # capture stol by default argument to avoid closure-over-loop-variable
+    for stol in schur_tols:
+        label = f"RG-schur={_fmt_tol(stol)}"
         methods.append((
             label,
-            lambda u, C, _s=stol: rg_logL(
-                u, C, tree=tree, schur_tol=1.0, sparse_tol=_s, verbose=False
+            lambda u, C, _s=stol: rg_logL(u, C, tree=tree, schur_tol=_s, verbose=False),
+        ))
+
+    for ptol in sparse_tols:
+        label = f"RG-sparse={_fmt_tol(ptol)}"
+        methods.append((
+            label,
+            lambda u, C, _p=ptol, _s=sparse_schur_tol: rg_logL(
+                u, C, tree=tree, schur_tol=_s, sparse_tol=_p, verbose=False
             ),
         ))
 
     return methods
-
-
-def _fmt_tol(v: float) -> str:
-    """Format a sparse_tol value concisely: 1.0 → '1', 0.1 → '0.1', 1000.0 → '1000'."""
-    if v == int(v):
-        return str(int(v))
-    return f"{v:g}"
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +121,12 @@ def _fmt_tol(v: float) -> str:
 def benchmark_n(
     n: int,
     n_repeats: int,
+    schur_tols: list[float],
     sparse_tols: list[float],
+    sparse_schur_tol: float,
     skip_mlf: bool,
 ) -> dict:
-    """
-    Build a problem of size N, time all methods, and record logL values.
-
-    Returns
-    -------
-    dict with keys: n, t_tree, methods (dict: label → {times, logL}).
-    """
+    """Build a problem of size N, time all methods, and record logL values."""
     from pointpv.rg.tree import build_tree
 
     print(f"  N={n}: constructing problem ...", flush=True)
@@ -143,7 +138,7 @@ def benchmark_n(
     t_tree = time.perf_counter() - t0
     print(f"  N={n}: tree built in {t_tree:.3f}s", flush=True)
 
-    method_list = _build_methods(tree, sparse_tols, skip_mlf)
+    method_list = _build_methods(tree, schur_tols, sparse_tols, sparse_schur_tol, skip_mlf)
 
     results: dict = {"n": n, "t_tree": t_tree, "methods": {}}
     for label, fn in method_list:
@@ -166,15 +161,15 @@ def benchmark_n(
 
 def print_tables(all_results: list[dict]) -> None:
     """Print timing and accuracy tables."""
-    # Collect all method labels in encounter order
     labels: list[str] = []
     for res in all_results:
         for lbl in res["methods"]:
             if lbl not in labels:
                 labels.append(lbl)
 
+    col_w = 14
+
     # --- timing table ---
-    col_w = 12
     header = f"{'N':>8}" + "".join(f"  {lbl:>{col_w}}" for lbl in labels)
     print("\n=== Best wall time per evaluation (s) ===")
     print(header)
@@ -190,7 +185,6 @@ def print_tables(all_results: list[dict]) -> None:
         print(row)
 
     # --- accuracy table ---
-    # |ΔlogL| relative to MLF (if present); otherwise relative to RG-dense
     ref_label = "MLF" if any("MLF" in r["methods"] for r in all_results) else "RG-dense"
     compare_labels = [l for l in labels if l != ref_label]
 
@@ -220,6 +214,7 @@ def print_tables(all_results: list[dict]) -> None:
 
 def plot_results(
     all_results: list[dict],
+    schur_tols: list[float],
     sparse_tols: list[float],
     output_path: str,
 ) -> None:
@@ -243,19 +238,17 @@ def plot_results(
 
     t_mlf   = np.array([_best(r, "MLF")      for r in all_results])
     t_dense = np.array([_best(r, "RG-dense")  for r in all_results])
-    t_schur = np.array([_best(r, "RG-schur")  for r in all_results])
-
     logL_mlf   = np.array([_logL(r, "MLF")     for r in all_results])
     logL_dense = np.array([_logL(r, "RG-dense") for r in all_results])
-    logL_schur = np.array([_logL(r, "RG-schur") for r in all_results])
-
     has_mlf = not np.all(np.isnan(t_mlf))
     ref_logL = logL_mlf if has_mlf else logL_dense
+    ref_label = "MLF" if has_mlf else "RG-dense"
 
-    # Colors for sparse variants: evenly spaced from a green colormap
+    # Colour ramps: orange family for schur variants, red/yellow for sparse variants
+    n_schur  = len(schur_tols)
     n_sparse = len(sparse_tols)
-    sparse_colors = [cm.YlOrRd(0.25 + 0.65 * i / max(n_sparse - 1, 1))
-                     for i in range(n_sparse)]
+    schur_colors  = [cm.Oranges(0.35 + 0.55 * i / max(n_schur  - 1, 1)) for i in range(n_schur)]
+    sparse_colors = [cm.YlOrRd(0.30 + 0.60 * i / max(n_sparse - 1, 1)) for i in range(n_sparse)]
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
 
@@ -263,26 +256,35 @@ def plot_results(
     if has_mlf:
         ax1.plot(Ns, t_mlf,   "o-",  color="#1f77b4", lw=2, label="MLF (Cholesky, O(N³))")
     ax1.plot(Ns, t_dense, "s--", color="#aec7e8", lw=1.5, label="RG-dense (O(N³))")
-    ax1.plot(Ns, t_schur, "D-.", color="#ff7f0e", lw=1.5, label="RG-schur (schur_tol=1)")
 
-    for i, stol in enumerate(sparse_tols):
-        label = f"RG-sparse={_fmt_tol(stol)}"
-        t_sp = np.array([_best(r, label) for r in all_results])
-        ax1.plot(Ns, t_sp, "v-", color=sparse_colors[i], lw=1.5,
-                 label=f"RG-sparse, tol={_fmt_tol(stol)} (km/s)²")
+    for i, stol in enumerate(schur_tols):
+        lbl = f"RG-schur={_fmt_tol(stol)}"
+        t_s = np.array([_best(r, lbl) for r in all_results])
+        ax1.plot(Ns, t_s, "D-.", color=schur_colors[i], lw=1.5,
+                 label=f"RG-schur, tol={_fmt_tol(stol)}")
 
-    # Reference lines anchored to first valid point
-    N_ref = np.geomspace(Ns[0], Ns[-1], 300)
+    for i, ptol in enumerate(sparse_tols):
+        lbl = f"RG-sparse={_fmt_tol(ptol)}"
+        t_p = np.array([_best(r, lbl) for r in all_results])
+        ax1.plot(Ns, t_p, "v-", color=sparse_colors[i], lw=1.5,
+                 label=f"RG-sparse, tol={_fmt_tol(ptol)} (km/s)²")
+
+    # Reference lines anchored to N[0]
+    N_ref  = np.geomspace(Ns[0], Ns[-1], 300)
     anchor = Ns[0]
     if has_mlf and not np.isnan(t_mlf[0]):
         ax1.plot(N_ref, t_mlf[0] * (N_ref / anchor) ** 3,
-                 color="#1f77b4", alpha=0.25, lw=1.2, linestyle=":")
-    if not np.isnan(t_schur[0]):
-        ax1.plot(N_ref, t_schur[0] * (N_ref / anchor) * np.log2(N_ref / anchor + 2),
-                 color="#ff7f0e", alpha=0.25, lw=1.2, linestyle=":",
-                 label=r"$N\log N$ ref")
-        ax1.plot(N_ref, t_schur[0] * (N_ref / anchor) ** 3,
-                 color="#ff7f0e", alpha=0.25, lw=1.2, linestyle="--")
+                 color="#1f77b4", alpha=0.20, lw=1.2, linestyle=":", label=r"$N^3$ ref")
+    # Anchor N log N to the first schur or sparse variant with valid timing
+    _t_fast = None
+    for stol in schur_tols:
+        candidate = np.array([_best(r, f"RG-schur={_fmt_tol(stol)}") for r in all_results])
+        if not np.isnan(candidate[0]):
+            _t_fast = candidate[0]
+            break
+    if _t_fast is not None:
+        ax1.plot(N_ref, _t_fast * (N_ref / anchor) * np.log2(N_ref / anchor + 2),
+                 color="#ff7f0e", alpha=0.20, lw=1.2, linestyle=":", label=r"$N\log N$ ref")
 
     ax1.set_xscale("log")
     ax1.set_yscale("log")
@@ -292,29 +294,30 @@ def plot_results(
     ax1.legend(fontsize=8, loc="upper left")
 
     # ---- bottom panel: accuracy ----
-    ref_label = "MLF" if has_mlf else "RG-dense"
     ax2.plot(Ns, np.abs(logL_dense - ref_logL), "s--", color="#aec7e8", lw=1.5,
              label="RG-dense")
-    ax2.plot(Ns, np.abs(logL_schur - ref_logL), "D-.", color="#ff7f0e", lw=1.5,
-             label="RG-schur (schur_tol=1)")
 
-    for i, stol in enumerate(sparse_tols):
-        lbl = f"RG-sparse={_fmt_tol(stol)}"
-        logL_sp = np.array([_logL(r, lbl) for r in all_results])
-        delta = np.abs(logL_sp - ref_logL)
-        # Replace zeros with NaN-safe small number for log plot
-        delta = np.where(delta == 0, 1e-15, delta)
+    for i, stol in enumerate(schur_tols):
+        lbl = f"RG-schur={_fmt_tol(stol)}"
+        logL_s = np.array([_logL(r, lbl) for r in all_results])
+        delta = np.where(np.abs(logL_s - ref_logL) == 0, 1e-15, np.abs(logL_s - ref_logL))
+        ax2.plot(Ns, delta, "D-.", color=schur_colors[i], lw=1.5,
+                 label=f"RG-schur, tol={_fmt_tol(stol)}")
+
+    for i, ptol in enumerate(sparse_tols):
+        lbl = f"RG-sparse={_fmt_tol(ptol)}"
+        logL_p = np.array([_logL(r, lbl) for r in all_results])
+        delta = np.where(np.abs(logL_p - ref_logL) == 0, 1e-15, np.abs(logL_p - ref_logL))
         ax2.plot(Ns, delta, "v-", color=sparse_colors[i], lw=1.5,
-                 label=f"RG-sparse, tol={_fmt_tol(stol)} (km/s)²")
+                 label=f"RG-sparse, tol={_fmt_tol(ptol)} (km/s)²")
 
     ax2.axhline(1e-6, color="gray", lw=0.8, linestyle=":", alpha=0.7)
     ax2.text(Ns[-1] * 0.98, 1.5e-6, "1e-6", ha="right", va="bottom",
              color="gray", fontsize=8)
-
     ax2.set_xscale("log")
     ax2.set_yscale("log")
     ax2.set_xlabel("N (galaxies)", fontsize=11)
-    ax2.set_ylabel(rf"$|\log L_{{\rm RG}} - \log L_{{\rm {ref_label}}}|$", fontsize=11)
+    ax2.set_ylabel(rf"$|\log L_\mathrm{{RG}} - \log L_\mathrm{{{ref_label}}}|$", fontsize=11)
     ax2.set_title("Likelihood accuracy vs. N (single evaluation, fixed fsigma8)", fontsize=12)
     ax2.legend(fontsize=8, loc="upper left")
 
@@ -337,9 +340,17 @@ def parse_args() -> argparse.Namespace:
         help="Catalog sizes to benchmark",
     )
     p.add_argument(
-        "--sparse-tols", type=float, nargs="+", default=[1.0, 10.0, 100.0, 1000.0],
+        "--schur-tols", type=float, nargs="*", default=[1.0], metavar="TOL",
+        help="schur_tol values for RG-schur variants (sparse_tol=0 for these curves)",
+    )
+    p.add_argument(
+        "--sparse-tols", type=float, nargs="*", default=[1.0, 10.0, 100.0, 1000.0],
         metavar="TOL",
-        help="sparse_tol values (km/s)² for RG-sparse variants (all use schur_tol=1)",
+        help="sparse_tol values (km/s)² for RG-sparse variants; pass no values to suppress",
+    )
+    p.add_argument(
+        "--sparse-schur-tol", type=float, default=1.0, metavar="TOL",
+        help="schur_tol used for all RG-sparse variants (must be > 0)",
     )
     p.add_argument(
         "--n-repeats", type=int, default=None,
@@ -360,11 +371,21 @@ def main() -> None:
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
+    schur_tols  = args.schur_tols  or []
+    sparse_tols = args.sparse_tols or []
+
+    if sparse_tols and args.sparse_schur_tol <= 0:
+        print("ERROR: --sparse-schur-tol must be > 0 when --sparse-tols are specified.",
+              file=sys.stderr)
+        sys.exit(1)
+
     print("=== benchmark_scaling.py ===")
-    print(f"  sizes       = {args.sizes}")
-    print(f"  sparse-tols = {args.sparse_tols}  (km/s)²")
-    print(f"  skip-mlf-large = {args.skip_mlf_large}")
-    print(f"  output-dir  = {args.output_dir}")
+    print(f"  sizes            = {args.sizes}")
+    print(f"  schur-tols       = {schur_tols}")
+    print(f"  sparse-tols      = {sparse_tols}  (km/s)²")
+    print(f"  sparse-schur-tol = {args.sparse_schur_tol}")
+    print(f"  skip-mlf-large   = {args.skip_mlf_large}")
+    print(f"  output-dir       = {args.output_dir}")
 
     if any(n >= 5000 for n in args.sizes):
         print(
@@ -379,13 +400,14 @@ def main() -> None:
         skip_mlf = args.skip_mlf_large is not None and n >= args.skip_mlf_large
         tag = f"MLF skipped: N >= {args.skip_mlf_large}" if skip_mlf else f"n_repeats={n_rep}"
         print(f"\n--- N={n} ({tag}) ---")
-        res = benchmark_n(n, n_rep, args.sparse_tols, skip_mlf=skip_mlf)
+        res = benchmark_n(n, n_rep, schur_tols, sparse_tols, args.sparse_schur_tol,
+                          skip_mlf=skip_mlf)
         all_results.append(res)
 
     print_tables(all_results)
 
     out_png = os.path.join(args.output_dir, "benchmark_scaling.png")
-    plot_results(all_results, args.sparse_tols, out_png)
+    plot_results(all_results, schur_tols, sparse_tols, out_png)
 
 
 if __name__ == "__main__":

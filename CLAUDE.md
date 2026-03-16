@@ -21,8 +21,10 @@ fsigma8 from peculiar velocity surveys, benchmarked against the standard MLF met
 
 ## Sparse Backend
 `sparse_ops.py` provides ScipySolver / PETScSolver infrastructure (selectable via
-POINTPV_BACKEND=scipy|petsc) for future SpMV operations, but is not yet called by
-the coarsening loop.
+POINTPV_BACKEND=scipy|petsc) and is called by `rg_coarsen_all` in the sparse path:
+- `get_solver()` is called once per `rg_coarsen_all` invocation when `sparse_tol > 0`
+- `dense_to_sparse(C)` initialises `C_cur` as a CSC sparse matrix
+- `solver.matvec(diff_col_sp, [d/c_dd])` replaces the manual COO u-update loop
 
 The active sparse path is in `rg_coarsen_all` via the `sparse_tol` parameter:
 - sparse_tol=0.0 (default): dense numpy path, O(N³)

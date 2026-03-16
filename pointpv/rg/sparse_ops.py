@@ -9,11 +9,11 @@ Select at runtime via the POINTPV_BACKEND environment variable:
     export POINTPV_BACKEND=scipy   # default
     export POINTPV_BACKEND=petsc   # GPU/MPI on Perlmutter
 
-The RG coarse-graining in coarsen.py currently uses dense NumPy arrays for
-correctness, because at each level the covariance sub-matrices are O(1)×O(1)
-for the per-pair steps.  This module is used when the inter-node covariance
-matrix at a given level is large and sparse, and SpMV (sparse matrix–vector
-product) is the bottleneck.
+The RG coarse-graining in coarsen.py uses this module when sparse_tol > 0:
+  - dense_to_sparse() converts the initial covariance to a CSC sparse matrix
+  - get_solver() selects the backend (scipy or petsc) once per call
+  - solver.matvec() performs the per-pair u-update SpMV (diff_col @ [d/c_dd])
+    in a backend-agnostic way, enabling GPU acceleration on Perlmutter via PETSc.
 
 Interface
 ---------

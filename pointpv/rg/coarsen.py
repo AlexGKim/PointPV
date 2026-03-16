@@ -50,6 +50,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from pointpv.rg.tree import RGTree, RGNode
+from pointpv.rg.sparse_ops import get_solver, dense_to_sparse
 
 
 def rg_coarsen_all(
@@ -114,8 +115,10 @@ def rg_coarsen_all(
     u_cur = u.copy()
     C_cur: "np.ndarray | sp.csc_matrix" = C.copy()
 
+    solver = get_solver() if sparse_tol > 0.0 else None
+
     if sparse_tol > 0.0:
-        C_cur = sp.csc_matrix(C_cur)
+        C_cur = dense_to_sparse(C_cur).tocsc()
 
     level_sizes: list[int] = [len(u_cur)]
     fill_fractions: list[float] = []
@@ -179,9 +182,8 @@ def rg_coarsen_all(
                     diff_col_sp = diff_sp.tocsc()
                     correction = (diff_col_sp @ diff_col_sp.T / c_dd).tocsc()
                     C_cur = (C_cur - correction).tocsc()
-                    # u update over non-zero rows only — O(k), no N-vector
-                    diff_coo = diff_col_sp.tocoo()
-                    u_cur[diff_coo.row] -= (diff_coo.data / c_dd) * d
+                    # u update via backend-agnostic SpMV: diff_col_sp (N,1) @ [d/c_dd]
+                    u_cur -= solver.matvec(diff_col_sp, np.array([d / c_dd]))
             else:
                 # Dense path: unchanged.
                 diff_col = C_cur[:, li] - C_cur[:, lj]

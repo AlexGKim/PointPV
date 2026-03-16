@@ -172,7 +172,6 @@ Output: `figs/benchmark_scaling.png`
 | No mock catalog yet | `data/` does not exist. Run `python scripts/generate_mock.py --synthetic --n 1000 --output data/mock_1000.npz` before any script. |
 | `docs/results.md` is empty | All benchmark tables are placeholders. Populate by running the pipeline end-to-end. |
 | FLIP tests not exercised locally | Tests marked `-m flip` are excluded from the fast suite. The covariance construction path (`pointpv/covariance/velocity.py` + FLIP) has not been run in CI. |
-| `sparse_ops.py` not wired in | `get_solver()` / `ScipySolver` / `PETScSolver` are defined but never called by `rg_coarsen_all`. The coarsening loop uses `scipy.sparse` directly. |
 
 ### NERSC (Perlmutter)
 
@@ -182,7 +181,7 @@ Output: `figs/benchmark_scaling.png`
 | `pointpv-gpu` env not created | Run `conda env create -f environment_gpu.yml` on Perlmutter before submitting jobs. |
 | AbacusSummit path unconfirmed | `docs/data.md` lists a likely path but notes it must be confirmed. No end-to-end run on real data yet. |
 | CuPy GPU Cholesky path untested | `POINTPV_BACKEND=cupy` in `baseline_job.sh` triggers a CuPy code path in `mlf.py` that has not been run on an A100. |
-| `POINTPV_BACKEND=petsc` has no effect | Set in `rg_job.sh` but `sparse_ops.py` is not called by the RG loop. Safe to change to `scipy` or omit. |
+| `POINTPV_BACKEND=petsc` sparse path untested on GPU | `sparse_ops.py` is now wired into `rg_coarsen_all` (via `get_solver()` / `solver.matvec`), but the PETSc backend has only been exercised on CPU. Full GPU validation requires an A100 node. |
 | `PETScSolver.logdet()` falls back to scipy | Even when PETSc is active, log-det is computed via `scipy.sparse.linalg.splu` (PETSc has no direct equivalent). Annotated in `sparse_ops.py:193`. |
 
 ---

@@ -52,6 +52,8 @@ import scipy.sparse as sp
 from pointpv.rg.tree import RGTree, RGNode
 from pointpv.rg.sparse_ops import get_solver, dense_to_sparse
 
+_SCHUR_BROADCAST_THRESHOLD = 0.5  # use broadcast when active fraction > this
+
 
 def rg_coarsen_all(
     u: np.ndarray,
@@ -62,7 +64,8 @@ def rg_coarsen_all(
     return_diagnostics: bool = False,
     fill_tol: float = 0.0,
     sparse_tol: float = 0.0,
-) -> "float | tuple[float, list[int]] | tuple[float, list[int], list[float]]":
+    stop_size: int = 1,
+) -> "float | tuple":
     """
     Run all RG coarsening levels and return the log-likelihood.
 
@@ -93,15 +96,25 @@ def rg_coarsen_all(
         Requires schur_tol > 0 (the full dense Schur update with schur_tol=0
         would negate the sparsity).  Together they give O(k²) work per pair
         where k = nnz per column instead of O(N²).
+    stop_size : int
+        Stop compression early when the active node count drops to <= stop_size
+        and return the compressed (partial_logL, C_stop, u_stop) for the caller
+        to finish with MLF (Cholesky).  Default 1 = full compression (existing
+        behaviour, returns scalar logL).  stop_size >= N means do no RG at all.
 
     Returns
     -------
     logL : float
-        When return_diagnostics=False (default).
+        When stop_size==1 and return_diagnostics=False (default).
     (logL, level_sizes) : (float, list[int])
-        When return_diagnostics=True and fill_tol==0.
+        When stop_size==1 and return_diagnostics=True and fill_tol==0.
     (logL, level_sizes, fill_fractions) : (float, list[int], list[float])
-        When return_diagnostics=True and fill_tol>0.
+        When stop_size==1 and return_diagnostics=True and fill_tol>0.
+    (partial_logL, C_stop, u_stop) : (float, ndarray, ndarray)
+        When stop_size > 1 and return_diagnostics=False.  The caller should add
+        mlf.log_likelihood(u_stop, C_stop) to get the full log-likelihood.
+    (partial_logL, C_stop, u_stop, level_sizes[, fill_fractions]) : tuple
+        When stop_size > 1 and return_diagnostics=True.
     """
     if sparse_tol > 0.0 and schur_tol == 0.0:
         raise ValueError(
@@ -133,6 +146,10 @@ def rg_coarsen_all(
     node_to_local: dict[int, int] = {id(n): i for i, n in enumerate(level_nodes)}
 
     for level_idx in range(1, tree.depth + 1):
+        # Hybrid mode: stop early and return compressed state for MLF handoff
+        if stop_size > 1 and len(u_cur) <= stop_size:
+            break
+
         t0 = time.perf_counter() if (verbose or fill_tol > 0.0) else 0.0
 
         # fill fraction at start of this level = entry computed at end of previous level
@@ -189,9 +206,18 @@ def rg_coarsen_all(
                 diff_col = C_cur[:, li] - C_cur[:, lj]
                 if schur_tol > 0.0:
                     active = np.abs(diff_col) > schur_tol
+                    k = int(active.sum())
                     if fill_tol > 0.0:
-                        level_active.append(float(np.mean(active)))
-                    if active.any():
+                        level_active.append(float(k / len(diff_col)))
+                    if k == 0:
+                        pass
+                    elif k >= len(u_cur) * _SCHUR_BROADCAST_THRESHOLD:
+                        # High active fraction: masked broadcast avoids copy+scatter overhead
+                        dc_full = diff_col * active
+                        C_cur -= np.outer(dc_full, dc_full) / c_dd
+                        u_cur -= (dc_full / c_dd) * d
+                    else:
+                        # Low active fraction: fancy indexing saves O(N²) work
                         dc = diff_col[active]
                         C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
                         u_cur[active] -= (dc / c_dd) * d
@@ -260,7 +286,16 @@ def rg_coarsen_all(
             msg += f", t={time.perf_counter()-t0:.4f}s"
             print(msg)
 
-    # Final single node
+    # Hybrid mode: stopped early — return compressed matrix and vector for MLF handoff
+    if stop_size > 1 and len(u_cur) > 1:
+        C_out = C_cur.toarray() if sp.issparse(C_cur) else C_cur.copy()
+        if return_diagnostics:
+            if fill_tol > 0.0:
+                return float(logL_acc), C_out, u_cur.copy(), level_sizes, fill_fractions
+            return float(logL_acc), C_out, u_cur.copy(), level_sizes
+        return float(logL_acc), C_out, u_cur.copy()
+
+    # Full compression to a single node (default behaviour)
     assert len(u_cur) == 1, f"Expected 1 final node, got {len(u_cur)}"
     c_final = float(C_cur[0, 0])
     logL_acc += -0.5 * (np.log(abs(c_final)) + u_cur[0]**2 / c_final)

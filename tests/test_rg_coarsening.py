@@ -98,3 +98,43 @@ def test_active_fraction_meaningful() -> None:
     assert len(result) == 3
 
 
+def test_active_frac_stop_triggers_mlf_handoff() -> None:
+    """active_frac_stop=0.5 should trigger early stop and return a 3-tuple."""
+    u, C, pos = _make_synthetic_problem(64, seed=70)
+    tree = build_tree(pos)
+    result = rg_coarsen_all(u, C, tree, schur_tol=1.0, active_frac_stop=0.5)
+    assert isinstance(result, tuple), "Expected tuple, got scalar float"
+    assert len(result) == 3
+    partial_logL, C_stop, u_stop = result
+    assert isinstance(partial_logL, float)
+    assert C_stop.shape[0] > 1, f"C_stop should have >1 node, got shape {C_stop.shape}"
+    assert u_stop.shape[0] == C_stop.shape[0]
+
+
+def test_active_frac_stop_accuracy() -> None:
+    """RG partial logL + MLF completion should match direct MLF within tolerance."""
+    from scipy.linalg import cho_factor, cho_solve
+
+    def mlf_logL(u: np.ndarray, C: np.ndarray) -> float:
+        cho = cho_factor(C)
+        sign, logdet = np.linalg.slogdet(C)
+        quad = float(u @ cho_solve(cho, u))
+        return -0.5 * (logdet + quad)
+
+    u, C, pos = _make_synthetic_problem(100, seed=71)
+    tree = build_tree(pos)
+
+    # Direct MLF reference
+    ref_logL = mlf_logL(u, C)
+
+    # RG partial + MLF completion
+    result = rg_coarsen_all(u, C, tree, schur_tol=1.0, active_frac_stop=0.5)
+    assert isinstance(result, tuple), "active_frac_stop should trigger early handoff"
+    partial_logL, C_stop, u_stop = result
+    total_logL = partial_logL + mlf_logL(u_stop, C_stop)
+
+    assert abs(total_logL - ref_logL) < 5.0, (
+        f"|ΔlogL| = {abs(total_logL - ref_logL):.4f} exceeds tolerance of 5.0"
+    )
+
+

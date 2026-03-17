@@ -62,6 +62,7 @@ def rg_coarsen_all(
     return_diagnostics: bool = False,
     fill_tol: float = 0.0,
     stop_size: int = 1,
+    active_frac_stop: float = 1.0,
 ) -> "float | tuple":
     """
     Run all RG coarsening levels and return the log-likelihood.
@@ -92,6 +93,12 @@ def rg_coarsen_all(
         and return the compressed (partial_logL, C_stop, u_stop) for the caller
         to finish with MLF (Cholesky).  Default 1 = full compression (existing
         behaviour, returns scalar logL).  stop_size >= N means do no RG at all.
+    active_frac_stop : float
+        When schur_tol > 0 and the mean active fraction (fraction of diff_col
+        rows with |diff_col[k]| > schur_tol) averaged over pairs at a level
+        reaches this value, stop coarsening and return the compressed state for
+        MLF handoff.  Default 1.0 disables the criterion.  Requires schur_tol > 0
+        when set below 1.0.
 
     Returns
     -------
@@ -102,11 +109,18 @@ def rg_coarsen_all(
     (logL, level_sizes, fill_fractions) : (float, list[int], list[float])
         When stop_size==1 and return_diagnostics=True and fill_tol>0.
     (partial_logL, C_stop, u_stop) : (float, ndarray, ndarray)
-        When stop_size > 1 and return_diagnostics=False.  The caller should add
+        When stop_size > 1 or active_frac_stop triggers, and
+        return_diagnostics=False.  The caller should add
         mlf.log_likelihood(u_stop, C_stop) to get the full log-likelihood.
     (partial_logL, C_stop, u_stop, level_sizes[, fill_fractions]) : tuple
-        When stop_size > 1 and return_diagnostics=True.
+        When stop_size > 1 or active_frac_stop triggers, and
+        return_diagnostics=True.
     """
+    if active_frac_stop < 1.0 and schur_tol == 0.0:
+        raise ValueError(
+            "active_frac_stop < 1.0 requires schur_tol > 0 "
+            "(with schur_tol=0 every row is always active)"
+        )
     logL_acc = 0.0
 
     level_nodes = tree.levels[0]
@@ -115,6 +129,7 @@ def rg_coarsen_all(
 
     level_sizes: list[int] = [len(u_cur)]
     fill_fractions: list[float] = []
+    early_stop = False
 
     # Compute fill fraction at level 0 (before any coarsening)
     if fill_tol > 0.0:
@@ -169,8 +184,7 @@ def rg_coarsen_all(
             if schur_tol > 0.0:
                 active = np.abs(diff_col) > schur_tol
                 k = int(active.sum())
-                if fill_tol > 0.0:
-                    level_active.append(float(k / len(diff_col)))
+                level_active.append(float(k / len(diff_col)))
                 if k == 0:
                     pass
                 elif k >= len(u_cur) * _SCHUR_BROADCAST_THRESHOLD:
@@ -225,14 +239,19 @@ def rg_coarsen_all(
             )
             if fill_tol > 0.0:
                 msg += f", fill={fill * 100:.1f}%"
-                if schur_tol > 0.0 and level_active:
-                    mean_active = float(np.mean(level_active))
-                    msg += f", active={mean_active * 100:.1f}%"
+            if schur_tol > 0.0 and level_active:
+                mean_active = float(np.mean(level_active))
+                msg += f", active={mean_active * 100:.1f}%"
             msg += f", t={time.perf_counter()-t0:.4f}s"
             print(msg)
 
+        if active_frac_stop < 1.0 and level_active:
+            if float(np.mean(level_active)) >= active_frac_stop:
+                early_stop = True
+                break
+
     # Hybrid mode: stopped early — return compressed matrix and vector for MLF handoff
-    if stop_size > 1 and len(u_cur) > 1:
+    if (stop_size > 1 or early_stop) and len(u_cur) > 1:
         if return_diagnostics:
             if fill_tol > 0.0:
                 return float(logL_acc), C_cur.copy(), u_cur.copy(), level_sizes, fill_fractions

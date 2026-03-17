@@ -38,6 +38,9 @@ Parameters controlling the speed/accuracy tradeoffs:
 - schur_tol=1.0: skip small rank-1 corrections, ~7x faster, |ΔlogL|~1e-6
 - fill_tol=0.0 (default): no fill tracking; fill_tol>0 records fill fraction of
   C_cur at each level (returned as 3rd element of diagnostics tuple)
+- active_frac_stop=1.0 (default disabled): when schur_tol>0 and the mean active
+  fraction at a level ≥ this value, stop and return compressed state for MLF
+  handoff (same interface as stop_size)
 
 ## Conventions
 - All covariance matrices are in units of (km/s)²

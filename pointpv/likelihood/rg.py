@@ -48,6 +48,7 @@ def log_likelihood(
     schur_tol: float = 0.0,
     tree: RGTree | None = None,
     fill_tol: float = 0.0,
+    active_frac_stop: float = 1.0,
 ) -> float:
     """
     McDonald RG log-likelihood.
@@ -69,6 +70,10 @@ def log_likelihood(
         avoiding redundant work in repeated evaluations (e.g. fsigma8 scans).
     fill_tol : float
         Passed through to rg_coarsen_all for sparsity tracking.
+    active_frac_stop : float
+        Passed through to rg_coarsen_all.  When schur_tol > 0 and the mean
+        active fraction at a level reaches this value, stop and return
+        compressed state for MLF handoff.  Default 1.0 disables the criterion.
 
     Returns
     -------
@@ -87,7 +92,7 @@ def log_likelihood(
 
     # Run the RG coarse-graining
     logL = rg_coarsen_all(u, C, tree, verbose=verbose, schur_tol=schur_tol,
-                          fill_tol=fill_tol)
+                          fill_tol=fill_tol, active_frac_stop=active_frac_stop)
 
     if verbose:
         print(f"  [RG] total wall time: {time.perf_counter()-t0:.3f}s")

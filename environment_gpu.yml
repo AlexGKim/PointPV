@@ -8,11 +8,11 @@ dependencies:
   - scipy
   - matplotlib
   - astropy
-  - colossus
   - cupy  # GPU arrays; version must match CUDA toolkit on Perlmutter
   - mpi4py
   - pip
   - pip:
+      - colossus
       - abacusutils
       - flip  # corentinravoux/flip
       # pip install git+https://github.com/corentinravoux/flip.git

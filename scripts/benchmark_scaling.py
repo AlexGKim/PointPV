@@ -119,6 +119,7 @@ def _build_methods(
     tree,
     schur_tols: list[float],
     skip_mlf: bool,
+    active_frac_stops: list[float] | None = None,
 ) -> list[tuple[str, object]]:
     """Return (label, callable) pairs for all methods to benchmark."""
     from pointpv.likelihood.mlf import log_likelihood as mlf_logL
@@ -140,6 +141,20 @@ def _build_methods(
             lambda u, C, _s=stol: rg_logL(u, C, tree=tree, schur_tol=_s, verbose=False),
         ))
 
+    for stol in schur_tols:
+        for afs in (active_frac_stops or []):
+            label = f"RG-schur={_fmt_tol(stol)}+afs={_fmt_tol(afs)}"
+
+            def _hybrid(u, C, _s=stol, _afs=afs):
+                result = rg_logL(u, C, tree=tree, schur_tol=_s,
+                                 active_frac_stop=_afs, verbose=False)
+                if isinstance(result, tuple):
+                    partial_logL, C_stop, u_stop = result
+                    return partial_logL + mlf_logL(u_stop, C_stop)
+                return result
+
+            methods.append((label, _hybrid))
+
     return methods
 
 
@@ -154,6 +169,7 @@ def benchmark_n(
     skip_mlf: bool,
     use_flip: bool = False,
     fsigma8: float = 0.47,
+    active_frac_stops: list[float] | None = None,
 ) -> dict:
     """Build a problem of size N, time all methods, and record logL values."""
     from pointpv.rg.tree import build_tree
@@ -171,7 +187,7 @@ def benchmark_n(
     t_tree = time.perf_counter() - t0
     print(f"  N={n}: tree built in {t_tree:.3f}s", flush=True)
 
-    method_list = _build_methods(tree, schur_tols, skip_mlf)
+    method_list = _build_methods(tree, schur_tols, skip_mlf, active_frac_stops)
 
     results: dict = {"n": n, "t_tree": t_tree, "t_cov": t_cov, "methods": {}}
     for label, fn in method_list:
@@ -255,6 +271,7 @@ def plot_results(
     all_results: list[dict],
     schur_tols: list[float],
     output_path: str,
+    active_frac_stops: list[float] | None = None,
 ) -> None:
     """Two-panel figure: runtime scaling (top) and |ΔlogL| accuracy (bottom)."""
     import matplotlib
@@ -285,6 +302,10 @@ def plot_results(
     n_schur = len(schur_tols)
     schur_colors = [cm.Oranges(0.35 + 0.55 * i / max(n_schur - 1, 1)) for i in range(n_schur)]  # type: ignore[attr-defined]
 
+    afs_list = active_frac_stops or []
+    n_afs = len(schur_tols) * len(afs_list)
+    afs_colors = [cm.Greens(0.35 + 0.55 * i / max(n_afs - 1, 1)) for i in range(n_afs)]  # type: ignore[attr-defined]
+
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
 
     # ---- top panel: runtime ----
@@ -297,6 +318,14 @@ def plot_results(
         t_s = np.array([_best(r, lbl) for r in all_results])
         ax1.plot(Ns, t_s, "D-.", color=schur_colors[i], lw=1.5,
                  label=f"RG-schur, tol={_fmt_tol(stol)}")
+
+    for idx, (stol, afs) in enumerate(
+        (s, a) for s in schur_tols for a in afs_list
+    ):
+        lbl = f"RG-schur={_fmt_tol(stol)}+afs={_fmt_tol(afs)}"
+        t_s = np.array([_best(r, lbl) for r in all_results])
+        ax1.plot(Ns, t_s, "^:", color=afs_colors[idx], lw=1.5,
+                 label=f"RG-schur={_fmt_tol(stol)}+afs={_fmt_tol(afs)}")
 
     # Reference lines anchored to N[0]
     N_ref  = np.geomspace(Ns[0], Ns[-1], 300)
@@ -332,6 +361,15 @@ def plot_results(
         ax2.plot(Ns, delta, "D-.", color=schur_colors[i], lw=1.5,
                  label=f"RG-schur, tol={_fmt_tol(stol)}")
 
+    for idx, (stol, afs) in enumerate(
+        (s, a) for s in schur_tols for a in afs_list
+    ):
+        lbl = f"RG-schur={_fmt_tol(stol)}+afs={_fmt_tol(afs)}"
+        logL_s = np.array([_logL(r, lbl) for r in all_results])
+        delta = np.where(np.abs(logL_s - ref_logL) == 0, 1e-15, np.abs(logL_s - ref_logL))
+        ax2.plot(Ns, delta, "^:", color=afs_colors[idx], lw=1.5,
+                 label=f"RG-schur={_fmt_tol(stol)}+afs={_fmt_tol(afs)}")
+
     ax2.axhline(1e-6, color="gray", lw=0.8, linestyle=":", alpha=0.7)
     ax2.text(Ns[-1] * 0.98, 1.5e-6, "1e-6", ha="right", va="bottom",
              color="gray", fontsize=8)
@@ -365,6 +403,11 @@ def parse_args() -> argparse.Namespace:
         help="schur_tol values for RG-schur variants",
     )
     p.add_argument(
+        "--active-frac-stops", type=float, nargs="*", default=[], metavar="AFS",
+        help="active_frac_stop values; for each schur_tol × active_frac_stop "
+             "combination a hybrid RG+MLF variant is added (requires schur_tol > 0)",
+    )
+    p.add_argument(
         "--n-repeats", type=int, default=None,
         help="Timing repeats per method per N.  Default: 3 for N<2000, 1 for N>=2000.",
     )
@@ -392,14 +435,16 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     schur_tols = args.schur_tols or []
+    active_frac_stops = args.active_frac_stops or []
 
     print("=== benchmark_scaling.py ===")
-    print(f"  sizes          = {args.sizes}")
+    print(f"  sizes              = {args.sizes}")
     use_flip = not args.no_flip
-    print(f"  covariance     = {'synthetic exponential' if args.no_flip else 'FLIP/CAMB (fsigma8=' + str(args.fsigma8) + ')'}")
-    print(f"  schur-tols     = {schur_tols}")
-    print(f"  skip-mlf-large = {args.skip_mlf_large}")
-    print(f"  output-dir     = {args.output_dir}")
+    print(f"  covariance         = {'synthetic exponential' if args.no_flip else 'FLIP/CAMB (fsigma8=' + str(args.fsigma8) + ')'}")
+    print(f"  schur-tols         = {schur_tols}")
+    print(f"  active-frac-stops  = {active_frac_stops}")
+    print(f"  skip-mlf-large     = {args.skip_mlf_large}")
+    print(f"  output-dir         = {args.output_dir}")
 
     if any(n >= 5000 for n in args.sizes):
         print(
@@ -415,13 +460,14 @@ def main() -> None:
         tag = f"MLF skipped: N >= {args.skip_mlf_large}" if skip_mlf else f"n_repeats={n_rep}"
         print(f"\n--- N={n} ({tag}) ---")
         res = benchmark_n(n, n_rep, schur_tols, skip_mlf=skip_mlf,
-                          use_flip=use_flip, fsigma8=args.fsigma8)
+                          use_flip=use_flip, fsigma8=args.fsigma8,
+                          active_frac_stops=active_frac_stops)
         all_results.append(res)
 
     print_tables(all_results)
 
     out_png = os.path.join(args.output_dir, "benchmark_scaling.png")
-    plot_results(all_results, schur_tols, out_png)
+    plot_results(all_results, schur_tols, out_png, active_frac_stops=active_frac_stops)
 
 
 if __name__ == "__main__":

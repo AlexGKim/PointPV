@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=pointpv_gpu_debug
-#SBATCH --account=m1234           # update with your NERSC project code
+#SBATCH --account=desi_g           # update with your NERSC project code
+#SBATCH --partition=gpu
 #SBATCH --constraint=gpu&hbm80g  # A100 80 GB nodes only
-#SBATCH --qos=debug
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
@@ -24,7 +24,7 @@ export POINTPV_BACKEND=cupy
 PY=$(conda info --base)/envs/pointpv-gpu/bin/python
 mkdir -p logs figs
 
-$PY scripts/benchmark_scaling.py \
+srun $PY scripts/benchmark_scaling.py \
     --no-flip \
     --sizes 64 256 1024 4096 \
     --schur-tols 50 100 \

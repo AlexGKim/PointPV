@@ -157,6 +157,12 @@ $PY scripts/benchmark_scaling.py --no-flip --sizes 100 500 1000 2000
 # FLIP/CAMB covariance (default), specific schur_tol values
 $PY scripts/benchmark_scaling.py --sizes 200 500 1000 --schur-tols 1 100 1000 10000
 
+# Hybrid RG+MLF via active_frac_stop: stop when mean active fraction >= threshold,
+# hand off compressed state to Cholesky.  Requires schur_tol > 0.
+# Each (schur_tol, active_frac_stop) pair adds a "RG-schur=X+afs=Y" variant.
+$PY scripts/benchmark_scaling.py --no-flip --sizes 100 500 1000 \
+    --schur-tols 1.0 --active-frac-stops 0.3 0.5 0.7
+
 # Skip MLF for large N (only time RG methods)
 $PY scripts/benchmark_scaling.py --skip-mlf-large 5000
 

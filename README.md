@@ -25,10 +25,10 @@ python scripts/generate_mock.py --synthetic --n 1000 --output data/mock_1000.npz
 python scripts/plot_catalog.py --catalog data/mock_1000.npz --output figs/
 
 # Run baseline MLF likelihood scan
-python scripts/run_baseline.py --catalog data/mock_1000.npz --backend scipy
+python scripts/run_baseline.py --catalog data/mock_1000.npz
 
 # Run McDonald RG likelihood scan
-python scripts/run_rg.py --catalog data/mock_1000.npz --backend scipy
+python scripts/run_rg.py --catalog data/mock_1000.npz
 
 # Compare results
 python scripts/compare.py --baseline results/baseline_1000.npz --rg results/rg_1000.npz
@@ -59,7 +59,7 @@ Complexity: O(N³). Uses FLIP for covariance matrix construction, CuPy for GPU C
 Reformulates the same Gaussian likelihood via hierarchical coarse-graining:
 at each level, pairs of adjacent galaxies are merged by integrating out their
 "difference mode." Each step contributes a scalar to log|det C| and updates the
-covariance of the "sum mode." Complexity: O(N³) dense (default), O(N log N) with sparse_tol + schur_tol > 0.
+covariance of the "sum mode." Complexity: O(N³) dense (default), O(N²) with schur_tol > 0.
 
 Reference: McDonald 2019, PhysRevD.100.043511.
 
@@ -70,7 +70,7 @@ pointpv/
 ├── mock/           AbacusSummit light cone reader + mock PV catalog
 ├── covariance/     Velocity-velocity covariance (wraps FLIP)
 ├── likelihood/     mlf.py (Cholesky baseline) + rg.py (McDonald RG)
-├── rg/             Tree building, RG coarse-graining, sparse backends
+├── rg/             Tree building, RG coarse-graining
 └── benchmark/      Timing and accuracy utilities
 ```
 
@@ -113,7 +113,7 @@ make test-all
 | `tests/test_rg_large_n.py` | RG vs Cholesky for N=200, 500, 1000 (`-m slow`) |
 | `tests/test_rg_odd_n.py` | Odd-N singleton pass-through (N=3,7,11,33,101) |
 | `tests/test_rg_schur_tol.py` | `schur_tol` accuracy tradeoff at N=200 |
-| `tests/test_rg_coarsening.py` | Sparse path: nnz reduction, fsigma8 recovery, sub-cubic scaling (`-m slow`); fill fraction tracking; level-size shrinkage |
+| `tests/test_rg_coarsening.py` | Fill fraction tracking; level-size shrinkage |
 | `tests/test_rg_flip_covariance.py` | SPD check + RG/MLF agreement with real FLIP covariance (`-m flip`) |
 | `tests/test_plots.py` | Smoke tests for all plot-generation functions |
 
@@ -143,7 +143,7 @@ Or via Makefile: `make validate`
 
 ### Runtime scaling benchmark
 
-Measures wall-clock time for MLF, RG-dense, and RG-fast across a range of
+Measures wall-clock time for MLF, RG-dense, and RG variants across a range of
 catalog sizes and produces a two-panel figure: log-log runtime scaling (with
 N³ and N log N reference lines) and |ΔlogL| accuracy vs N.
 
@@ -151,8 +151,11 @@ N³ and N log N reference lines) and |ΔlogL| accuracy vs N.
 # Default: N = 100, 1000, 10000  (N=10000 ~800 MB RAM, MLF ~30-120 s)
 $PY scripts/benchmark_scaling.py
 
-# Laptop-friendly
-$PY scripts/benchmark_scaling.py --sizes 100 500 1000 2000
+# Laptop-friendly, synthetic exponential covariance
+$PY scripts/benchmark_scaling.py --no-flip --sizes 100 500 1000 2000
+
+# FLIP/CAMB covariance (default), specific schur_tol values
+$PY scripts/benchmark_scaling.py --sizes 200 500 1000 --schur-tols 1 100 1000 10000
 
 # Skip MLF for large N (only time RG methods)
 $PY scripts/benchmark_scaling.py --skip-mlf-large 5000
@@ -162,6 +165,22 @@ make benchmark
 ```
 
 Output: `figs/benchmark_scaling.png`
+
+### Hybrid RG+MLF stop-size benchmark
+
+Finds the optimal point to hand off from RG compression to a final Cholesky
+solve. Sweeps `stop_size` (powers of 2 from 1 to N) and plots total time
+T_RG(N→stop) + T_MLF(stop) vs stop_size.
+
+```bash
+# Dense path (shows flat curve — no benefit for dense)
+$PY scripts/benchmark_hybrid.py --sizes 500 1000
+
+# Multiple N to see how optimal stop_size scales
+$PY scripts/benchmark_hybrid.py --sizes 200 500 1000 2000
+```
+
+Output: `figs/benchmark_hybrid_<mode>.png`
 
 ## Status: incomplete items
 
@@ -181,8 +200,6 @@ Output: `figs/benchmark_scaling.png`
 | `pointpv-gpu` env not created | Run `conda env create -f environment_gpu.yml` on Perlmutter before submitting jobs. |
 | AbacusSummit path unconfirmed | `docs/data.md` lists a likely path but notes it must be confirmed. No end-to-end run on real data yet. |
 | CuPy GPU Cholesky path untested | `POINTPV_BACKEND=cupy` in `baseline_job.sh` triggers a CuPy code path in `mlf.py` that has not been run on an A100. |
-| `POINTPV_BACKEND=petsc` sparse path untested on GPU | `sparse_ops.py` is now wired into `rg_coarsen_all` (via `get_solver()` / `solver.matvec`), but the PETSc backend has only been exercised on CPU. Full GPU validation requires an A100 node. |
-| `PETScSolver.logdet()` falls back to scipy | Even when PETSc is active, log-det is computed via `scipy.sparse.linalg.splu` (PETSc has no direct equivalent). Annotated in `sparse_ops.py:193`. |
 
 ---
 

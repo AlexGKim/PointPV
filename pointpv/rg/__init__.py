@@ -1,1 +1,1 @@
-"""McDonald RG coarse-graining: tree, coarsen, and sparse backend."""
+"""McDonald RG coarse-graining: tree and coarsen."""

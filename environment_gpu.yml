@@ -10,7 +10,6 @@ dependencies:
   - astropy
   - colossus
   - cupy  # GPU arrays; version must match CUDA toolkit on Perlmutter
-  - petsc4py  # MPI-distributed sparse ops with cuSPARSE backend
   - mpi4py
   - pip
   - pip:

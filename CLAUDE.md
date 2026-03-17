@@ -19,27 +19,10 @@ fsigma8 from peculiar velocity surveys, benchmarked against the standard MLF met
 - `pointpv/rg/`         — RG tree, coarse-graining step, sparse backend abstraction
 - `pointpv/benchmark/`  — timing and accuracy comparison utilities
 
-## Sparse Backend
-`sparse_ops.py` provides ScipySolver / PETScSolver infrastructure (selectable via
-POINTPV_BACKEND=scipy|petsc) and is called by `rg_coarsen_all` in the sparse path:
-- `get_solver()` is called once per `rg_coarsen_all` invocation when `sparse_tol > 0`
-- `dense_to_sparse(C)` initialises `C_cur` as a CSC sparse matrix
-- `solver.matvec(diff_col_sp, [d/c_dd])` replaces the manual COO u-update loop
-
-The active sparse path is in `rg_coarsen_all` via the `sparse_tol` parameter:
-- sparse_tol=0.0 (default): dense numpy path, O(N³)
-- sparse_tol=X > 0: fully sparse path — C_cur stored as scipy.sparse.csc_matrix;
-  column differences kept as sparse (N,1) vectors (no todense()); schur_tol threshold
-  applied directly to stored values; rank-1 Schur correction computed as a true sparse
-  outer product (diff_col_sp @ diff_col_sp.T, no dense k×k intermediate); u update
-  touches only the k non-zero rows via COO indices; off-diagonal entries below
-  sparse_tol zeroed after each level. Requires schur_tol > 0 (enforced by ValueError).
-  O(k²) per pair, O(N log N) asymptotically when k = O(log N).
-
 ## Environments
 - Laptop:     `generic` conda env works (has numpy, scipy, astropy, camb, pytest)
               conda env create -f environment_cpu.yml creates `pointpv-cpu`
-- Perlmutter: conda env create -f environment_gpu.yml  (adds petsc4py, cupy)
+- Perlmutter: conda env create -f environment_gpu.yml  (adds cupy)
 - conda is miniforge3; use `$(conda info --base)/envs/generic/bin/python` for the
   direct python path (needed because `conda run` mis-parses `--n` as its own flag)
 
@@ -50,13 +33,11 @@ The active sparse path is in `rg_coarsen_all` via the `sparse_tol` parameter:
 - emcee and iminuit must be installed: pip install emcee iminuit
 
 ## RG coarsen_all
-Parameters controlling the speed/accuracy/sparsity tradeoffs:
+Parameters controlling the speed/accuracy tradeoffs:
 - schur_tol=0.0 (default): exact dense Schur update, ~560ms for N=1000
 - schur_tol=1.0: skip small rank-1 corrections, ~7x faster, |ΔlogL|~1e-6
 - fill_tol=0.0 (default): no fill tracking; fill_tol>0 records fill fraction of
   C_cur at each level (returned as 3rd element of diagnostics tuple)
-- sparse_tol=0.0 (default): dense path; sparse_tol>0 uses scipy.sparse.csc_matrix
-  and eliminates entries below sparse_tol after each level (requires schur_tol>0)
 
 ## Conventions
 - All covariance matrices are in units of (km/s)²

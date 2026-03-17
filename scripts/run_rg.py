@@ -4,7 +4,6 @@ Run the McDonald RG log-likelihood scan over fsigma8.
 
 Usage
 -----
-    python scripts/run_rg.py --n 1000 --backend scipy
     python scripts/run_rg.py --catalog data/mock_1000.npz --output results/rg_1000.npz
 """
 
@@ -28,9 +27,6 @@ def parse_args() -> argparse.Namespace:
                    help="Catalog size (used to locate default catalog path)")
     p.add_argument("--output", default=None,
                    help="Output .npz path.  Default: results/rg_{n}.npz")
-    p.add_argument("--backend", default=None,
-                   choices=["scipy", "petsc"],
-                   help="Sparse backend (overrides POINTPV_BACKEND)")
     p.add_argument("--fs8-min", type=float, default=0.2)
     p.add_argument("--fs8-max", type=float, default=0.8)
     p.add_argument("--n-grid", type=int, default=20,
@@ -46,9 +42,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-
-    if args.backend is not None:
-        os.environ["POINTPV_BACKEND"] = args.backend
 
     # ---- load or generate catalog ----
     if args.synthetic:

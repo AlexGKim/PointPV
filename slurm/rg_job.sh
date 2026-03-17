@@ -15,8 +15,6 @@
 module load python cudatoolkit
 conda activate pointpv_gpu
 
-export POINTPV_BACKEND=petsc
-
 # ---- parameters (override from sbatch --export or edit here) ----
 N=${N:-1000}
 FS8_MIN=${FS8_MIN:-0.2}
@@ -28,14 +26,13 @@ OUTPUT=${OUTPUT:-results/rg_${N}.npz}
 mkdir -p logs results
 
 echo "=== PointPV McDonald RG ==="
-echo "N=${N}  backend=${POINTPV_BACKEND}  nodes=1"
+echo "N=${N}  nodes=1"
 date
 
 python scripts/run_rg.py \
     --n ${N} \
     --catalog ${CATALOG} \
     --output ${OUTPUT} \
-    --backend petsc \
     --fs8-min ${FS8_MIN} \
     --fs8-max ${FS8_MAX} \
     --n-grid ${N_GRID}

@@ -21,10 +21,9 @@ conda activate pointpv-gpu
 
 export POINTPV_BACKEND=cupy
 
-PY=$(conda info --base)/envs/pointpv-gpu/bin/python
 mkdir -p logs figs
 
-srun $PY scripts/benchmark_scaling.py \
+srun python scripts/benchmark_scaling.py \
     --no-flip \
     --sizes 64 256 1024 4096 \
     --schur-tols 50 100 \

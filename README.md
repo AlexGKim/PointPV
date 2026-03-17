@@ -188,7 +188,7 @@ sbatch slurm/benchmark_gpu_a100.sh
 
 - Runs on a single A100 80 GB node (`--constraint=gpu&hbm80g`)
 - Uses FLIP/CAMB covariance by default (real science case); add `--no-flip` to the
-  `$PY scripts/benchmark_scaling.py ...` call for a quick synthetic test
+  `python scripts/benchmark_scaling.py ...` call for a quick synthetic test
 - Sweeps `--sizes 1000 5000 10000 30000 60000` with `--schur-tols 50 100 500 1000`
   and `--active-frac-stops 0.3 0.5 0.7`; skips CPU MLF for N ≥ 5 000
 - GPU variants (MLF-GPU, RG-dense-GPU) require `POINTPV_BACKEND=cupy` (set in the

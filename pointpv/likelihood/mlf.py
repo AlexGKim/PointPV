@@ -77,7 +77,8 @@ def _cholesky_scipy(u: np.ndarray, C: np.ndarray) -> float:
 def _cholesky_cupy(u: np.ndarray, C: np.ndarray) -> float:
     """GPU Cholesky log-likelihood via CuPy."""
     import cupy as cp
-    from cupy.linalg import cholesky, solve_triangular
+    from cupy.linalg import cholesky
+    from cupyx.scipy.linalg import solve_triangular
 
     C_gpu = cp.asarray(C, dtype=cp.float64)
     u_gpu = cp.asarray(u, dtype=cp.float64)

@@ -399,7 +399,7 @@ def parse_args() -> argparse.Namespace:
         help="Catalog sizes to benchmark",
     )
     p.add_argument(
-        "--schur-tols", type=float, nargs="*", default=[1.0], metavar="TOL",
+        "--schur-tols", type=float, nargs="*", default=[100.0], metavar="TOL",
         help="schur_tol values for RG-schur variants",
     )
     p.add_argument(

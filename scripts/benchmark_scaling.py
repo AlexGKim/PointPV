@@ -13,11 +13,21 @@ Fixed baselines always timed:
 Configurable variants:
   RG-schur=X  — one curve per --schur-tols value (schur_tol=X)
 
+GPU variants (--gpu):
+  MLF-GPU       — full Cholesky on GPU via CuPy
+  RG-dense-GPU  — dense Schur updates on GPU (schur_tol=0)
+  Hybrid handoff uses GPU Cholesky instead of CPU scipy
+
 Covariance modes:
   default  — synthetic exponential kernel (no FLIP required)
   --flip   — real FLIP/CAMB covariance using AbacusSummit cosmology; requires
              FLIP and CAMB to be installed.  Covariance is built once per N
              before timing begins; build time is printed separately.
+
+Checkpoint / restart:
+  After each N completes, results are saved to
+  {output_dir}/benchmark_scaling_checkpoint.json.  Re-running with the same
+  parameters will skip already-completed N values.
 
 Usage
 -----
@@ -26,6 +36,7 @@ Usage
     python scripts/benchmark_scaling.py --no-flip --sizes 100 500 1000
     python scripts/benchmark_scaling.py --schur-tols 0.1 0.5 1.0 5.0
     python scripts/benchmark_scaling.py --skip-mlf-large 5000
+    python scripts/benchmark_scaling.py --gpu --sizes 1000 5000 10000 30000 60000
 
 Notes
 -----
@@ -37,6 +48,7 @@ Notes
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -105,6 +117,54 @@ def _make_flip_problem(
 
 
 # ---------------------------------------------------------------------------
+# Checkpoint helpers
+# ---------------------------------------------------------------------------
+
+def _make_args_key(
+    sizes: list[int],
+    schur_tols: list[float],
+    active_frac_stops: list[float],
+    use_gpu: bool,
+    use_flip: bool,
+    fsigma8: float,
+) -> str:
+    """Encode key run parameters into a canonical JSON string."""
+    return json.dumps({
+        "sizes": sorted(sizes),
+        "schur_tols": sorted(schur_tols),
+        "active_frac_stops": sorted(active_frac_stops),
+        "use_gpu": use_gpu,
+        "use_flip": use_flip,
+        "fsigma8": fsigma8,
+    }, sort_keys=True)
+
+
+def _load_checkpoint(output_dir: str, args_key: str) -> list[dict]:
+    path = os.path.join(output_dir, "benchmark_scaling_checkpoint.json")
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        if data.get("args_key") != args_key:
+            print("  Checkpoint found but parameters changed — starting fresh.")
+            return []
+        return data.get("results", [])
+    except Exception as e:
+        print(f"  Warning: could not load checkpoint: {e}")
+        return []
+
+
+def _save_checkpoint(output_dir: str, args_key: str, results: list[dict]) -> None:
+    path = os.path.join(output_dir, "benchmark_scaling_checkpoint.json")
+    try:
+        with open(path, "w") as f:
+            json.dump({"args_key": args_key, "results": results}, f, indent=2)
+    except Exception as e:
+        print(f"  Warning: could not save checkpoint: {e}")
+
+
+# ---------------------------------------------------------------------------
 # Method list builder
 # ---------------------------------------------------------------------------
 
@@ -120,6 +180,7 @@ def _build_methods(
     schur_tols: list[float],
     skip_mlf: bool,
     active_frac_stops: list[float] | None = None,
+    use_gpu: bool = False,
 ) -> list[tuple[str, object]]:
     """Return (label, callable) pairs for all methods to benchmark."""
     from pointpv.likelihood.mlf import log_likelihood as mlf_logL
@@ -134,6 +195,18 @@ def _build_methods(
         ("RG-dense", lambda u, C: rg_logL(u, C, tree=tree, verbose=False))
     )
 
+    # GPU variants (only when --gpu is set and cupy is available)
+    if use_gpu:
+        import cupy as cp
+        from pointpv.likelihood.mlf import _cholesky_cupy
+
+        def _to_gpu(u, C):
+            return cp.asarray(u, dtype=cp.float64), cp.asarray(C, dtype=cp.float64)
+
+        methods.append(("MLF-GPU", lambda u, C: _cholesky_cupy(u, C)))
+        methods.append(("RG-dense-GPU",
+            lambda u, C: float(rg_logL(*_to_gpu(u, C), tree=tree, verbose=False))))
+
     for stol in schur_tols:
         label = f"RG-schur={_fmt_tol(stol)}"
         methods.append((
@@ -141,16 +214,22 @@ def _build_methods(
             lambda u, C, _s=stol: rg_logL(u, C, tree=tree, schur_tol=_s, verbose=False),
         ))
 
+    # Determine how to finish the hybrid handoff
+    if use_gpu:
+        from pointpv.likelihood.mlf import _cholesky_cupy as _finish_fn  # type: ignore[assignment]
+    else:
+        from pointpv.likelihood.mlf import log_likelihood as _finish_fn  # type: ignore[assignment]
+
     for stol in schur_tols:
         for afs in (active_frac_stops or []):
             label = f"RG-schur={_fmt_tol(stol)}+afs={_fmt_tol(afs)}"
 
-            def _hybrid(u, C, _s=stol, _afs=afs):
+            def _hybrid(u, C, _s=stol, _afs=afs, _finish=_finish_fn):
                 result = rg_logL(u, C, tree=tree, schur_tol=_s,
                                  active_frac_stop=_afs, verbose=False)
                 if isinstance(result, tuple):
                     partial_logL, C_stop, u_stop = result
-                    return partial_logL + mlf_logL(u_stop, C_stop)
+                    return partial_logL + _finish(u_stop, C_stop)
                 return result
 
             methods.append((label, _hybrid))
@@ -170,6 +249,7 @@ def benchmark_n(
     use_flip: bool = False,
     fsigma8: float = 0.47,
     active_frac_stops: list[float] | None = None,
+    use_gpu: bool = False,
 ) -> dict:
     """Build a problem of size N, time all methods, and record logL values."""
     from pointpv.rg.tree import build_tree
@@ -187,7 +267,8 @@ def benchmark_n(
     t_tree = time.perf_counter() - t0
     print(f"  N={n}: tree built in {t_tree:.3f}s", flush=True)
 
-    method_list = _build_methods(tree, schur_tols, skip_mlf, active_frac_stops)
+    method_list = _build_methods(tree, schur_tols, skip_mlf, active_frac_stops,
+                                 use_gpu=use_gpu)
 
     results: dict = {"n": n, "t_tree": t_tree, "t_cov": t_cov, "methods": {}}
     for label, fn in method_list:
@@ -198,7 +279,8 @@ def benchmark_n(
             t0 = time.perf_counter()
             logL = fn(u, C)
             times.append(time.perf_counter() - t0)
-        results["methods"][label] = {"times": times, "logL": logL}
+        results["methods"][label] = {"times": [float(t) for t in times],
+                                     "logL": float(logL)}
         print(f"  N={n}: {label}  best={min(times):.4f}s  logL={logL:.4f}", flush=True)
 
     return results
@@ -306,12 +388,26 @@ def plot_results(
     n_afs = len(schur_tols) * len(afs_list)
     afs_colors = [cm.Greens(0.35 + 0.55 * i / max(n_afs - 1, 1)) for i in range(n_afs)]  # type: ignore[attr-defined]
 
+    # Collect GPU method labels from results
+    gpu_labels: list[str] = []
+    for res in all_results:
+        for lbl in res["methods"]:
+            if "-GPU" in lbl and lbl not in gpu_labels:
+                gpu_labels.append(lbl)
+    n_gpu = len(gpu_labels)
+    gpu_colors = [cm.Blues(0.45 + 0.45 * i / max(n_gpu - 1, 1)) for i in range(n_gpu)]  # type: ignore[attr-defined]
+
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
 
     # ---- top panel: runtime ----
     if has_mlf:
         ax1.plot(Ns, t_mlf,   "o-",  color="#1f77b4", lw=2, label="MLF (Cholesky, O(N³))")
     ax1.plot(Ns, t_dense, "s--", color="#aec7e8", lw=1.5, label="RG-dense (O(N³))")
+
+    for i, lbl in enumerate(gpu_labels):
+        t_g = np.array([_best(r, lbl) for r in all_results])
+        marker = "v" if lbl == "MLF-GPU" else "p"
+        ax1.plot(Ns, t_g, f"{marker}-", color=gpu_colors[i], lw=2, label=lbl)
 
     for i, stol in enumerate(schur_tols):
         lbl = f"RG-schur={_fmt_tol(stol)}"
@@ -353,6 +449,12 @@ def plot_results(
     # ---- bottom panel: accuracy ----
     ax2.plot(Ns, np.abs(logL_dense - ref_logL), "s--", color="#aec7e8", lw=1.5,
              label="RG-dense")
+
+    for i, lbl in enumerate(gpu_labels):
+        logL_g = np.array([_logL(r, lbl) for r in all_results])
+        delta = np.where(np.abs(logL_g - ref_logL) == 0, 1e-15, np.abs(logL_g - ref_logL))
+        marker = "v" if lbl == "MLF-GPU" else "p"
+        ax2.plot(Ns, delta, f"{marker}-", color=gpu_colors[i], lw=2, label=lbl)
 
     for i, stol in enumerate(schur_tols):
         lbl = f"RG-schur={_fmt_tol(stol)}"
@@ -424,8 +526,13 @@ def parse_args() -> argparse.Namespace:
         help="fsigma8 value for FLIP covariance build (--flip only).",
     )
     p.add_argument(
+        "--gpu", action="store_true",
+        help="Add GPU variants (MLF-GPU, RG-dense-GPU) and use GPU Cholesky for "
+             "hybrid handoff.  Requires CuPy and POINTPV_BACKEND=cupy.",
+    )
+    p.add_argument(
         "--output-dir", default="figs",
-        help="Directory for output figure.",
+        help="Directory for output figure and checkpoint.",
     )
     return p.parse_args()
 
@@ -436,14 +543,16 @@ def main() -> None:
 
     schur_tols = args.schur_tols or []
     active_frac_stops = args.active_frac_stops or []
+    use_gpu = args.gpu
+    use_flip = not args.no_flip
 
     print("=== benchmark_scaling.py ===")
     print(f"  sizes              = {args.sizes}")
-    use_flip = not args.no_flip
     print(f"  covariance         = {'synthetic exponential' if args.no_flip else 'FLIP/CAMB (fsigma8=' + str(args.fsigma8) + ')'}")
     print(f"  schur-tols         = {schur_tols}")
     print(f"  active-frac-stops  = {active_frac_stops}")
     print(f"  skip-mlf-large     = {args.skip_mlf_large}")
+    print(f"  gpu                = {use_gpu}")
     print(f"  output-dir         = {args.output_dir}")
 
     if any(n >= 5000 for n in args.sizes):
@@ -453,16 +562,38 @@ def main() -> None:
             "\n  Use --skip-mlf-large 5000 to omit MLF for large N."
         )
 
-    all_results: list[dict] = []
+    args_key = _make_args_key(
+        sizes=args.sizes,
+        schur_tols=schur_tols,
+        active_frac_stops=active_frac_stops,
+        use_gpu=use_gpu,
+        use_flip=use_flip,
+        fsigma8=args.fsigma8,
+    )
+    checkpoint = _load_checkpoint(args.output_dir, args_key)
+    completed_ns = {r["n"] for r in checkpoint}
+    all_results: list[dict] = list(checkpoint)
+
+    if completed_ns:
+        print(f"\n  Resuming from checkpoint: {sorted(completed_ns)} already done.")
+
     for n in args.sizes:
+        if n in completed_ns:
+            print(f"\n--- N={n} (loaded from checkpoint, skipping) ---")
+            continue
         n_rep = args.n_repeats if args.n_repeats is not None else (1 if n >= 2000 else 3)
         skip_mlf = args.skip_mlf_large is not None and n >= args.skip_mlf_large
         tag = f"MLF skipped: N >= {args.skip_mlf_large}" if skip_mlf else f"n_repeats={n_rep}"
         print(f"\n--- N={n} ({tag}) ---")
         res = benchmark_n(n, n_rep, schur_tols, skip_mlf=skip_mlf,
                           use_flip=use_flip, fsigma8=args.fsigma8,
-                          active_frac_stops=active_frac_stops)
+                          active_frac_stops=active_frac_stops,
+                          use_gpu=use_gpu)
         all_results.append(res)
+        _save_checkpoint(args.output_dir, args_key, all_results)
+
+    # Sort results by N for consistent tables/plots
+    all_results.sort(key=lambda r: r["n"])
 
     print_tables(all_results)
 

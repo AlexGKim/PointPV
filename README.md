@@ -172,6 +172,30 @@ make benchmark
 
 Output: `figs/benchmark_scaling.png`
 
+#### Running on NERSC Perlmutter (GPU)
+
+```bash
+# One-time environment setup on Perlmutter
+conda env create -f environment_gpu.yml
+conda activate pointpv-gpu
+```
+
+Edit `slurm/benchmark_gpu_a100.sh` and set `--account=<your_project_code>`, then:
+
+```bash
+sbatch slurm/benchmark_gpu_a100.sh
+```
+
+- Runs on a single A100 80 GB node (`--constraint=gpu&hbm80g`)
+- Uses FLIP/CAMB covariance by default (real science case); add `--no-flip` to the
+  `$PY scripts/benchmark_scaling.py ...` call for a quick synthetic test
+- Sweeps `--sizes 1000 5000 10000 30000 60000` with `--schur-tols 50 100 500 1000`
+  and `--active-frac-stops 0.3 0.5 0.7`; skips CPU MLF for N ≥ 5 000
+- GPU variants (MLF-GPU, RG-dense-GPU) require `POINTPV_BACKEND=cupy` (set in the
+  batch script)
+- Results: `figs/benchmark_scaling.png`, `logs/gpu_bench_<jobid>.out`
+- For a quick smoke-test (< 30 min), submit `slurm/benchmark_gpu_a100_debug.sh` instead
+
 ### Hybrid RG+MLF stop-size benchmark
 
 Finds the optimal point to hand off from RG compression to a final Cholesky

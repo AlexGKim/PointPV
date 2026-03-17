@@ -190,12 +190,12 @@ def rg_coarsen_all(
                 elif k >= len(u_cur) * _SCHUR_BROADCAST_THRESHOLD:
                     # High active fraction: masked broadcast avoids copy+scatter overhead
                     dc_full = diff_col * active
-                    C_cur -= np.outer(dc_full, dc_full) / c_dd
+                    C_cur -= (dc_full[:, None] * dc_full[None, :]) / c_dd
                     u_cur -= (dc_full / c_dd) * d
                 else:
                     # Low active fraction: fancy indexing saves O(N²) work
                     dc = diff_col[active]
-                    C_cur[np.ix_(active, active)] -= np.outer(dc, dc) / c_dd
+                    C_cur[np.ix_(active, active)] -= (dc[:, None] * dc[None, :]) / c_dd
                     u_cur[active] -= (dc / c_dd) * d
             else:
                 scale = diff_col / c_dd

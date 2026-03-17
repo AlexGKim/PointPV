@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=pointpv_gpu_bench
-#SBATCH --account=m1234           # update with your NERSC project code
+#SBATCH --account=desi_g           # update with your NERSC project code
 #SBATCH --constraint=gpu&hbm80g  # A100 80 GB nodes only
 #SBATCH --qos=regular
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
 #SBATCH --gpus-per-node=1
-#SBATCH --time=04:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/gpu_bench_%j.out
 #SBATCH --error=logs/gpu_bench_%j.err
 
@@ -24,7 +24,6 @@ python scripts/benchmark_scaling.py \
     --sizes 1000 5000 10000 30000 60000 \
     --schur-tols 50 100 500 1000 \
     --active-frac-stops 0.3 0.5 0.7 \
-    --skip-mlf-large 5000 \
     --n-repeats 3 \
     --gpu \
     --output-dir figs

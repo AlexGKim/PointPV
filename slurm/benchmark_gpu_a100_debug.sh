@@ -24,10 +24,9 @@ export POINTPV_BACKEND=cupy
 mkdir -p logs figs
 
 srun python scripts/benchmark_scaling.py \
-    --no-flip \
     --sizes 64 256 1024 4096 \
-    --schur-tols 50 100 \
-    --active-frac-stops 0.3 0.5 \
+    --schur-tols 5000 10000 30000 \
+    --active-frac-stops 0.1 0.2 \
     --n-repeats 1 \
     --gpu \
     --output-dir figs
